@@ -1,4 +1,5 @@
 from pyaedt.edb_core.IPC2581.content.entry_color import EntryColor
+import xml.etree.cElementTree as ET
 
 class DictionaryColor(object):
     def __init__(self):
@@ -17,5 +18,8 @@ class DictionaryColor(object):
         if isinstance(value, EntryColor):
             self._dict_colors.append(value)
 
-    def write_xml(self):
-        pass
+    def write_xml(self, content=None):
+        if content:
+            dict_color = ET.SubElement(content, "DictionaryColor")
+            for color in self.dict_colors:
+
