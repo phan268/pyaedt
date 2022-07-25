@@ -2114,7 +2114,8 @@ class PostProcessor(PostProcessorCommon, object):
             Name of the solution in the format ``"solution : sweep"``. The default is ``None``.
         variation_dict : dict, optional
             Dictionary of all variation variables with their values.
-            The default is ``None``.
+            Property `available_variations.nominal_w_values` is also accepted as input.
+            The default is ``None`` and `available_variations.nominal_w_values` is applied.
         isvector : bool, optional
             Whether the quantity is a vector. The  default is ``False``.
         intrinsics : str, optional
@@ -2162,21 +2163,28 @@ class PostProcessor(PostProcessorCommon, object):
             self.ofieldsreporter.EnterVol(obj_list)
             self.ofieldsreporter.CalcOp(scalar_function)
         if not variation_dict:
-            variation_dict = self._app.available_variations.nominal_w_values
+            variation_list = self._app.available_variations.nominal_w_values
+        elif isinstance(variation_dict, (dict, OrderedDict)):
+            variation_list = []
+            for k, v in variation_list.items():
+                variation_list.append(k + ":=")
+                variation_list.append(v)
+        else:
+            variation_list = [i for i in variation_dict]
         if intrinsics:
             if "Transient" in solution:
-                variation_dict.append("Time:=")
-                variation_dict.append(intrinsics)
+                variation_list.append("Time:=")
+                variation_list.append(intrinsics)
             else:
-                variation_dict.append("Freq:=")
-                variation_dict.append(intrinsics)
-                variation_dict.append("Phase:=")
+                variation_list.append("Freq:=")
+                variation_list.append(intrinsics)
+                variation_list.append("Phase:=")
                 if phase:
-                    variation_dict.append(phase)
+                    variation_list.append(phase)
                 else:
-                    variation_dict.append("0deg")
+                    variation_list.append("0deg")
         file_name = os.path.join(self._app.working_directory, generate_unique_name("temp_fld") + ".fld")
-        self.ofieldsreporter.CalculatorWrite(file_name, ["Solution:=", solution], variation_dict)
+        self.ofieldsreporter.CalculatorWrite(file_name, ["Solution:=", solution], variation_list)
         value = None
         if os.path.exists(file_name) or settings.remote_rpc_session:
             with open_file(file_name, "r") as f:
@@ -2213,7 +2221,8 @@ class PostProcessor(PostProcessorCommon, object):
             Name of the solution in the format ``"solution : sweep"``. The default is ``None``.
         variation_dict : dict, optional
             Dictionary of all variation variables with their values.
-            The default is ``None``.
+            Property `available_variations.nominal_w_values` is also accepted as input.
+            The default is ``None`` and `available_variations.nominal_w_values` is applied.
         filename : str, optional
             Full path and name to save the file to.
             The default is ``None`` which export file in working_directory.
@@ -2296,19 +2305,26 @@ class PostProcessor(PostProcessorCommon, object):
             self.logger.error("Error in the type of the grid.")
             return False
         if not variation_dict:
-            variation_dict = self._app.available_variations.nominal_w_values
+            variation_list = self._app.available_variations.nominal_w_values
+        elif isinstance(variation_dict, (dict, OrderedDict)):
+            variation_list = []
+            for k, v in variation_list.items():
+                variation_list.append(k + ":=")
+                variation_list.append(v)
+        else:
+            variation_list = [i for i in variation_dict]
         if intrinsics:
             if "Transient" in solution:
-                variation_dict.append("Time:=")
-                variation_dict.append(intrinsics)
+                variation_list.append("Time:=")
+                variation_list.append(intrinsics)
             else:
-                variation_dict.append("Freq:=")
-                variation_dict.append(intrinsics)
-                variation_dict.append("Phase:=")
+                variation_list.append("Freq:=")
+                variation_list.append(intrinsics)
+                variation_list.append("Phase:=")
                 if phase:
-                    variation_dict.append(phase)
+                    variation_list.append(phase)
                 else:
-                    variation_dict.append("0deg")
+                    variation_list.append("0deg")
 
         self.ofieldsreporter.ExportOnGrid(
             filename,
@@ -2316,7 +2332,7 @@ class PostProcessor(PostProcessorCommon, object):
             grid_stop_wu,
             grid_step_wu,
             solution,
-            variation_dict,
+            variation_list,
             True,
             gridtype,
             grid_center,
@@ -2352,7 +2368,8 @@ class PostProcessor(PostProcessorCommon, object):
             The default is ``None``.
         variation_dict : dict, optional
             Dictionary of all variation variables with their values.
-            The default is ``None``.
+            Property `available_variations.nominal_w_values` is also accepted as input.
+            The default is ``None`` and `available_variations.nominal_w_values` is applied.
         filename : str, optional
             Full path and name to save the file to.
             The default is ``None`` which export file in working_directory.
@@ -2414,28 +2431,35 @@ class PostProcessor(PostProcessorCommon, object):
                     self.logger.error("No correct choice.")
                     return False
                 self.ofieldsreporter.CalcOp("Value")
-                variation_dict = self._app.available_variations.nominal_w_values
+                variation_list = self._app.available_variations.nominal_w_values
             else:
                 variations = self._app.available_variations.nominal_w_values_dict
-                variation_dict = []
+                variation_list = []
                 for el, value in variations.items():
-                    variation_dict.append(el + ":=")
-                    variation_dict.append(value)
+                    variation_list.append(el + ":=")
+                    variation_list.append(value)
+        elif isinstance(variation_dict, (dict, OrderedDict)):
+            variation_list = []
+            for el, value in variation_dict.items():
+                variation_list.append(el + ":=")
+                variation_list.append(value)
+        else:
+            variation_list = [i for i in variation_dict]
         if intrinsics:
             if "Transient" in solution:
-                variation_dict.append("Time:=")
-                variation_dict.append(intrinsics)
+                variation_list.append("Time:=")
+                variation_list.append(intrinsics)
             else:
-                variation_dict.append("Freq:=")
-                variation_dict.append(intrinsics)
-                variation_dict.append("Phase:=")
+                variation_list.append("Freq:=")
+                variation_list.append(intrinsics)
+                variation_list.append("Phase:=")
                 if phase:
-                    variation_dict.append(phase)
+                    variation_list.append(phase)
                 else:
-                    variation_dict.append("0deg")
+                    variation_list.append("0deg")
         if not sample_points_file and not sample_points_lists:
 
-            _retry_ntimes(10, self.ofieldsreporter.CalculatorWrite, filename, ["Solution:=", solution], variation_dict)
+            _retry_ntimes(10, self.ofieldsreporter.CalculatorWrite, filename, ["Solution:=", solution], variation_list)
         elif sample_points_file:
 
             _retry_ntimes(
@@ -2444,7 +2468,7 @@ class PostProcessor(PostProcessorCommon, object):
                 filename,
                 sample_points_file,
                 solution,
-                variation_dict,
+                variation_list,
                 export_with_sample_points,
             )
         else:
@@ -2458,7 +2482,7 @@ class PostProcessor(PostProcessorCommon, object):
                 filename,
                 sample_points_file,
                 solution,
-                variation_dict,
+                variation_list,
                 export_with_sample_points,
             )
 
