@@ -3096,7 +3096,7 @@ class Source(object):
         dict_out = {}
         for k, v in self.__dict__.items():
             if k == "_positive_node" or k == "_negative_node":
-                nodes = v._json_format()
+                nodes = v._json_format()  # pragma: no cover
                 dict_out[k[1:]] = nodes
             else:
                 dict_out[k[1:]] = v
