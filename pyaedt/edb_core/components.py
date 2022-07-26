@@ -718,7 +718,7 @@ class Components(object):
             self._edb.Geometry.PointData(self._get_edb_value(0.0), self._get_edb_value(0.0)),
             0.0,
         )
-        if not is_ironpython:
+        if not is_ironpython:  # pragma: no cover
             res, from_layer, to_layer = pin.GetLayerRange(None, None)
         else:
             res, from_layer, to_layer = pin.GetLayerRange()
@@ -947,25 +947,21 @@ class Components(object):
         for pin in pins:
             pin.SetIsLayoutPin(True)
             if is_ironpython:
-                test = new_group.AddMember(pin)
+                new_group.AddMember(pin)
             else:
                 if not self._components_methods.AddPinToGroup(new_group, pin):
                     self._logger.error(
                         "Failed to add pin {} to the group {}".format(pin.GetName(), new_group.GetName())
                     )
-        if not placement_layer:
+        if not placement_layer:  # pragma: no cover
             new_cmp_layer_name = pins[0].GetPadstackDef().GetData().GetLayerNames()[0]
-        else:
+        else:  # pragma: no cover
             new_cmp_layer_name = placement_layer
         new_cmp_placement_layer = self._edb.Cell.Layer.FindByName(
             self._active_layout.GetLayerCollection(), new_cmp_layer_name
         )
         new_cmp.SetPlacementLayer(new_cmp_placement_layer)
-        # cmp_transform = System.Activator.CreateInstance(self._edb.Utility.)
-        # new_cmp.SetTransform(cmp_transform)
-        return (True, new_cmp)
-        # except:
-        #    return (False, None)
+        return new_cmp
 
     @pyaedt_function_handler()
     def set_component_model(self, componentname, model_type="Spice", modelpath=None, modelname=None):

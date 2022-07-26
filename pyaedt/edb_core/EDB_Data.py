@@ -3095,8 +3095,8 @@ class Source(object):
     def _json_format(self):  # pragma: no cover
         dict_out = {}
         for k, v in self.__dict__.items():
-            if k == "_positive_node" or k == "_negative_node":
-                nodes = v._json_format()  # pragma: no cover
+            if k == "_positive_node" or k == "_negative_node":  # pragma: no cover
+                nodes = v._json_format()
                 dict_out[k[1:]] = nodes
             else:
                 dict_out[k[1:]] = v
@@ -3104,11 +3104,11 @@ class Source(object):
 
     def _read_json(self, source_dict):  # pragma: no cover
         for k, v in source_dict.items():
-            if k == "positive_node":
+            if k == "positive_node":  # pragma: no cover
                 self.positive_node._read_json(v)
-            elif k == "negative_node":
+            elif k == "negative_node":  # pragma: no cover
                 self.negative_node._read_json(v)
-            else:
+            else:  # pragma: no cover
                 self.__setattr__(k, v)
 
 
@@ -4899,7 +4899,7 @@ class EDBStatistics(object):
         return self._nb_inductors
 
     @num_inductors.setter
-    def num_inductors(self, value):
+    def num_inductors(self, value):  # pragma: no cover
         if isinstance(value, int):
             self._nb_inductors = value
 

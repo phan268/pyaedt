@@ -1383,16 +1383,12 @@ class EdbSiwave(object):
                 else:
                     if is_ironpython:
                         sweep.Frequencies = self._pedb.simsetupdata.SweepData.SetFrequencies(
-                            simulation_setup.start_frequency,
-                            simulation_setup.stop_freq,
-                            simulation_setup.step_freq,
+                            simulation_setup.start_frequency, simulation_setup.stop_freq, simulation_setup.step_freq
                         )
                     else:
                         sweep.Frequencies = convert_py_list_to_net_list(
                             self._pedb.simsetupdata.SweepData.SetFrequencies(
-                                simulation_setup.start_frequency,
-                                simulation_setup.stop_freq,
-                                simulation_setup.step_freq,
+                                simulation_setup.start_frequency, simulation_setup.stop_freq, simulation_setup.step_freq
                             )
                         )
                 if is_ironpython:
