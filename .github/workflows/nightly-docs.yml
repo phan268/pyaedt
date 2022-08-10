@@ -36,6 +36,7 @@ jobs:
       - name: Install doc build requirements
         run: |
           pip install -r requirements_docs.txt
+          sudo apt install graphviz
 
       - name: Full Documentation Build
         run: |
