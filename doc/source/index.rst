@@ -1,4 +1,4 @@
-PyAEDT Documentation  |version|
+PyAEDT documentation  |version|
 ===============================
 
 ..
@@ -14,12 +14,10 @@ PyAEDT Documentation  |version|
    Resources/ClientServer
    API/index
    examples/index
-   Resources/Code_Guidelines
    Resources/Contributing
 
 
-
-Indices and Tables
+Indices and tables
 ==================
 * :ref:`genindex`
 * :ref:`modindex`
