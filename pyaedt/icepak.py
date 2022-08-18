@@ -1764,7 +1764,7 @@ class Icepak(FieldAnalysis3D):
     def UniteFieldsSummaryReports(self, savedir, proj_icepak):
         """Unite the files created by a fields summary for the variations.
 
-        .. deprecated:: 0.5.0
+        .. deprecated:: 0.6.0
 
         Parameters
         ----------
