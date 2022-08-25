@@ -51,6 +51,29 @@ jobs:
       # run doc build, without creating the examples directory
       # note that we have to add the examples file here since it won't
       # be created as gallery is disabled on linux.
+
+      - name: Retrieve PyAEDT version
+        run: |
+          echo "::set-output name=PYAEDT_VERSION::$(python -c "from pyaedt import __version__; print(__version__)")"
+          echo "PyAEDT version is: $(python -c "from pyaedt import __version__; print(__version__)")"
+        id: version
+
+      - name: Cache docs build directory
+        uses: actions/cache@v2
+        with:
+          path: doc/build
+          key: doc-build-v${{ env.RESET_DOC_BUILD_CACHE }}-${{ steps.version.outputs.PyAEDT_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            doc-build-v${{ env.RESET_DOC_BUILD_CACHE }}-${{ steps.version.outputs.PyAEDT_VERSION }}
+
+      - name: Cache autosummary
+        uses: actions/cache@v2
+        with:
+          path: doc/source/**/_autosummary/*.rst
+          key: autosummary-v${{ env.RESET_AUTOSUMMARY_CACHE }}-${{ steps.version.outputs.PyAEDT_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            autosummary-v${{ env.RESET_AUTOSUMMARY_CACHE }}-${{ steps.version.outputs.PyAEDT_VERSION }}
+
       - name: Documentation Build
         run: |
           mkdir doc/source/examples -p
