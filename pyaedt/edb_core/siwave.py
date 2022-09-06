@@ -18,6 +18,7 @@ from pyaedt.modeler.GeometryOperators import GeometryOperators
 try:
     from System import String
     from System.Collections.Generic import Dictionary
+    from System.Collections.Generic import List
 except ImportError:
     if os.name != "posix":
         warnings.warn("This module requires pythonnet.")
@@ -1335,30 +1336,35 @@ class EdbSiwave(object):
                 )
             if simulation_setup.min_void_area:  # pragma: no cover
                 simsetup_info.SimulationSettings.DCAdvancedSettings.DcMinVoidAreaToMesh = simulation_setup.min_void_area
-            try:
-                sweep = self._pedb.simsetupdata.SweepData(simulation_setup.sweep_name)
-                sweep.IsDiscrete = False  # need True for package??
-                sweep.UseQ3DForDC = simulation_setup.use_q3d_for_dc
-                sweep.RelativeSError = simulation_setup.relative_error
-                sweep.InterpUsePortImpedance = False
-                sweep.EnforceCausality = (GeometryOperators.parse_dim_arg(simulation_setup.start_frequency) - 0) < 1e-9
-                sweep.EnforcePassivity = simulation_setup.enforce_passivity
-                sweep.PassivityTolerance = simulation_setup.passivity_tolerance
-                list(sweep.Frequencies).clear()
-                if simulation_setup.sweep_type == SweepType.LogCount:  # pragma: no cover
-                    self._setup_decade_count_sweep(
-                        sweep,
-                        simulation_setup.start_frequency,
-                        simulation_setup.stop_freq,
-                        simulation_setup.decade_count,
-                    )
-                else:
-                    sweep.Frequencies = self._pedb.simsetupdata.SweepData.SetFrequencies(
-                        simulation_setup.start_frequency, simulation_setup.stop_freq, simulation_setup.step_freq
-                    )
-                simsetup_info.SweepDataList.Add(sweep)
-            except Exception as err:
-                self._logger.error("Exception in sweep configuration: {0}.".format(err))
+            sweep = self._pedb.simsetupdata.SweepData(simulation_setup.sweep_name)
+            sweep.IsDiscrete = False  # need True for package??
+            sweep.UseQ3DForDC = simulation_setup.use_q3d_for_dc
+            sweep.RelativeSError = simulation_setup.relative_error
+            sweep.InterpUsePortImpedance = False
+            sweep.EnforceCausality = (GeometryOperators.parse_dim_arg(simulation_setup.start_frequency) - 0) < 1e-9
+            sweep.EnforcePassivity = simulation_setup.enforce_passivity
+            sweep.PassivityTolerance = simulation_setup.passivity_tolerance
+            if simulation_setup.sweep_type == SweepType.LogCount:  # pragma: no cover
+                self._setup_decade_count_sweep(
+                    sweep,
+                    simulation_setup.start_frequency,
+                    simulation_setup.stop_freq,
+                    simulation_setup.decade_count,
+                )
+            else:
+                freq_list = List[str]()
+                sweep_list = self._pedb.simsetupdata.SweepData.SetFrequencies(
+                    simulation_setup.start_frequency, simulation_setup.stop_freq, simulation_setup.step_freq
+                )
+                for freq in sweep_list:
+                    freq_list.Add(freq)
+                sweep.Frequencies = freq_list
+                sweep_str = "LIN {} {} {}".format(
+                    simulation_setup.start_frequency, simulation_setup.stop_freq, simulation_setup.step_freq
+                )
+                # sweep.Frequencies = List[str]()
+                sweep.FrequencyString = sweep_str
+            simsetup_info.SweepDataList.append(sweep)
             edb_sim_setup = self._edb.Utility.SIWaveSimulationSetup(simsetup_info)
             return self._cell.AddSimulationSetup(edb_sim_setup)
         if simulation_setup.solver_type == SolverType.SiwaveDC:  # pragma: no cover
