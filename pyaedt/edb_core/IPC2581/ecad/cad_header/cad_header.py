@@ -1,12 +1,15 @@
-from pyaedt.edb_core.IPC2581.ipc2581 import IPC2581
-from pyaedt.edb_core.IPC2581.ecad.cad_header.spec import Spec
+import xml.etree.cElementTree as ET
 
+from pyaedt.edb_core.IPC2581.ecad.cad_header.spec import Spec
+from pyaedt.edb_core.IPC2581.ipc2581 import IPC2581
 
 
 class CadHeader(object):
+    """Class describing layer stackup."""
+
     def __init__(self):
         self.units = IPC2581.units
-        self._specs = []
+        self.specs = []
 
     @property
     def specs(self):
@@ -22,5 +25,9 @@ class CadHeader(object):
         if isinstance(spec, Spec):
             self._specs.append(spec)
 
-    def write_xml(self):
-        pass
+    def write_xml(self, ecad):
+        if ecad:
+            cad_header = ET.SubElement(ecad, "CadHeader")
+            cad_header.set("units", self.units)
+            for spec in self.specs:
+                spec.write_xml(cad_header)

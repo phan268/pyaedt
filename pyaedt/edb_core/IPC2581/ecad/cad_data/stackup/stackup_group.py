@@ -1,3 +1,5 @@
+import xml.etree.cElementTree as ET
+
 from pyaedt.edb_core.IPC2581.ecad.cad_data.stackup.layer import Layer
 
 
@@ -25,3 +27,13 @@ class StackupGroup(object):
     def add_layer(self, layer=None):
         if isinstance(layer, Layer):
             self._stackup_layers.append(layer)
+
+    def write_xml(self, stackup):
+        if stackup:
+            stackup_group = ET.SubElement(stackup, "StackupGroup")
+            stackup_group.set("name", "GROUP_PRIMARY")
+            stackup_group.set("thickness", self.thickness)
+            stackup_group.set("tolPlus", self.tol_plus)
+            stackup_group.set("tolMinus", self.tol_minus)
+            for layer in self.stackup_layers:
+                layer.write_xml(stackup_group)

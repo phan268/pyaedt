@@ -1,14 +1,17 @@
+import xml.etree.cElementTree as ET
+
 from pyaedt.edb_core.IPC2581.ecad.cad_data.stackup.layer import Layer
 from pyaedt.edb_core.IPC2581.ecad.cad_data.stackup.stackup import Stackup
 from pyaedt.edb_core.IPC2581.ecad.cad_data.step import Step
+from pyaedt.edb_core.IPC2581.ipc2581 import IPC2581
 
 
-
-class CadData(object):
+class CadData(IPC2581):
     def __init__(self):
         self._layers = []
         self.stackup = Stackup()
         self.cad_data_step = Step()
+        IPC2581.__init__(self)
 
     @property
     def layers(self):
@@ -26,5 +29,10 @@ class CadData(object):
             return True
         return False
 
-    def write_xml(self):
-        pass
+    def write_xml(self, ecad):
+        if ecad:
+            cad_data = ET.SubElement(ecad, "CadData")
+            for layer in self.layers:
+                layer.write_xml(cad_data)
+            for step in self.cad_data_step:
+                step.write_xml(cad_data)

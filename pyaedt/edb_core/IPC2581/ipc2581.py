@@ -15,6 +15,8 @@ class IPC2581(object, file_path=None):
         self.history_record = HistoryRecord()
         self.ecad = Ecad()
         self.file_path = file_path
+        self.design_name = ""
+        self_datum = ""
 
     @property
     def units(self):

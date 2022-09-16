@@ -1,3 +1,6 @@
+import xml.etree.cElementTree as ET
+
+
 class Layer(object):
     def __init__(self):
         self.name = ""
@@ -32,8 +35,13 @@ class Layer(object):
         if isinstance(value, int):
             self._layer_polarity = value
 
-    def write_xml(self):
-        pass
+    def write_xml(self, cad_data):
+        if cad_data:
+            layer = ET.SubElement(cad_data, "Layer")
+            layer.set("name", self.name)
+            layer.set("layerFunction", self.layer_function)
+            layer.set("side", self.layer_side)
+            layer.set("polarity", self.layer_polarity)
 
 
 class Function(object):
