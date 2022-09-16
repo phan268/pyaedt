@@ -125,3 +125,5 @@ class Step(IPC2581):
                 padsatck_def.write_xml(step)
             for package in self.packages:
                 package.write_xml(step)
+            for component in self.components:
+                component.write_xml(step)
