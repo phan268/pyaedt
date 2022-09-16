@@ -5,5 +5,5 @@ class AssemblyDrawing(object):
     def __init__(self):
         self.polygon = Polygon()
 
-    def write_xml(self):
+    def write_xml(self, step):
         pass

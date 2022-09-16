@@ -123,3 +123,5 @@ class Step(IPC2581):
             step.set("name", self.design_name)
             for padsatck_def in self.padstack_defs:
                 padsatck_def.write_xml(step)
+            for package in self.packages:
+                package.write_xml(step)
