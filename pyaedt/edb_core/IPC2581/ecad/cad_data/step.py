@@ -1,16 +1,17 @@
-from pyaedt.edb_core.IPC2581.ecad.cad_data.profile import Profile
-from pyaedt.edb_core.IPC2581.ecad.cad_data.padstack_def.padstack_def import PadstackDef
-from pyaedt.edb_core.IPC2581.ecad.cad_data.package.package import Package
+import xml.etree.cElementTree as ET
+
 from pyaedt.edb_core.IPC2581.ecad.cad_data.component.component import Component
-from pyaedt.edb_core.IPC2581.ecad.cad_data.logical_net.logical_net import LogicalNets
-from pyaedt.edb_core.IPC2581.ecad.cad_data.phy_net.phy_net import PhyNet
 from pyaedt.edb_core.IPC2581.ecad.cad_data.layer_feature.layer_feature import LayerFeature
+from pyaedt.edb_core.IPC2581.ecad.cad_data.logical_net.logical_net import LogicalNets
+from pyaedt.edb_core.IPC2581.ecad.cad_data.package.package import Package
+from pyaedt.edb_core.IPC2581.ecad.cad_data.padstack_def.padstack_def import PadstackDef
+from pyaedt.edb_core.IPC2581.ecad.cad_data.phy_net.phy_net import PhyNet
+from pyaedt.edb_core.IPC2581.ecad.cad_data.profile import Profile
+from pyaedt.edb_core.IPC2581.ipc2581 import IPC2581
 
 
-class Step(object):
+class Step(IPC2581):
     def __init__(self):
-        self._name = ""
-        self._datum = (0.0, 0.0)
         self._padstack_defs = []
         self._profile = Profile()
         self._packages = []
@@ -18,24 +19,6 @@ class Step(object):
         self._logical_nets = LogicalNets()
         self._physical_nets = []
         self._layer_features = []
-
-    @property
-    def name(self):
-        return self._name
-
-    @name.setter
-    def name(self, value):
-        if isinstance(value, str):
-            self._name = value
-
-    @property
-    def datum(self):
-        return self._datum
-
-    @datum.setter
-    def datum(self, value):
-        if isinstance(value, tuple):
-            self._datum = value
 
     @property
     def padstack_defs(self):
@@ -83,7 +66,15 @@ class Step(object):
     @layer_features.setter
     def layer_features(self, value):
         if isinstance(value, list):
-            if len([feat for feat in value if isinstance(feat, )]):
+            if len(
+                [
+                    feat
+                    for feat in value
+                    if isinstance(
+                        feat,
+                    )
+                ]
+            ):
                 self._layer_features = value
 
     @property
@@ -126,5 +117,9 @@ class Step(object):
             return True
         return False
 
-    def write_xml(self):
-        pass
+    def write_xml(self, cad_data):
+        if cad_data:
+            step = ET.SubElement(cad_data, "Step")
+            step.set("name", self.design_name)
+            for padsatck_def in self.padstack_defs:
+                padsatck_def.write_xml(step)

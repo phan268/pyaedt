@@ -1,3 +1,5 @@
+import xml.etree.cElementTree as ET
+
 from pyaedt.edb_core.IPC2581.ecad.cad_data.padstack_def.padstack_hole_def import PadstackHoleDef
 from pyaedt.edb_core.IPC2581.ecad.cad_data.padstack_def.padstack_pad_def import PadstackPadDef
 
@@ -22,5 +24,10 @@ class PadstackDef(object):
         if isinstance(pad, PadstackPadDef):
             self._padstack_pad_def.append(pad)
 
-    def write_xml(self):
-        pass
+    def write_xml(self, step):
+        if step:
+            padstack_def = ET.SubElement(step, "PadStackDef")
+            padstack_def.set("name", self.name)
+            self.padstack_hole_def.write_xml(padstack_def)
+            for pad in self.padstack_pad_def:
+                pad.write_xml(padstack_def)
