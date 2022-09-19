@@ -1,32 +1,17 @@
-class LogicalNets(object):
-    def __init__(self):
-        self._logical_nets = []
-
-    @property
-    def logical_nets(self):
-        return self._logical_nets
-
-    @logical_nets.setter
-    def logical_nets(self, value):
-        if isinstance(value, list):
-            if len([net for net in value if isinstance(net, LogicalNet)]) == len(value):
-                self._logical_nets = value
-
-    def add_net(self, net=None):
-        if isinstance(net, LogicalNet):
-            self._logical_nets.append(net)
-
-    def write_xml(self):
-        pass
+import xml.etree.cElementTree as ET
 
 
 class LogicalNet(object):
     def __init__(self):
         self.name = ""
-        self._pin_ref = []
+        self.pin_ref = []
 
-    def write_xml(self):
-        pass
+    def write_xml(self, step):
+        if step:
+            logical_net = ET.SubElement(step, "LogicalNet")
+            logical_net.set("name", self.name)
+            for pin in self.pin_ref:
+                pin.write_xml(logical_net)
 
 
 class PinRef(object):
@@ -34,5 +19,8 @@ class PinRef(object):
         self.pin = ""
         self.component_ref = ""
 
-    def write_xml(self):
-        pass
+    def write_xml(self, logical_net):
+        if logical_net:
+            pin_ref = ET.SubElement(logical_net, "PinRef")
+            pin_ref.set("pin", self.pin)
+            pin_ref.set("componentRef", self.component_ref)

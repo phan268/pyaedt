@@ -1,3 +1,6 @@
+import xml.etree.cElementTree as ET
+
+
 class PhyNet(object):
     def __init__(self):
         self._name = ""
@@ -26,85 +29,43 @@ class PhyNet(object):
         if isinstance(point, PhyNetPoint):
             self._phy_net_points.append(point)
 
-    def write_xml(self):
-        pass
+    def write_xml(self, step):
+        if step:
+            phy_net = ET.SubElement(step, "PhyNet")
+            for phy_net_point in self.phy_net_points:
+                phy_net_point.write_xml(phy_net)
 
 
 class PhyNetPoint(object):
     def __init__(self):
-        self._x = 0.0
-        self._y = 0.0
-        self._layer_ref = ""
-        self._net_node_type = NetNodeType().Middle
+        self.x = 0.0
+        self.y = 0.0
+        self.layer_ref = ""
+        self.net_node_type = ""
         self._exposure = ExposureType().Exposed
-        self._via = False
-        self._standard_primitive_id = ""
-
-    @property
-    def x(self):
-        return self._x
-
-    @x.setter
-    def x(self, value):
-        if isinstance(value, float):
-            self._x = value
-
-    @property
-    def y(self):
-        return self._y
-
-    @y.setter
-    def y(self, value):
-        if isinstance(value, float):
-            self._y = value
-
-    @property
-    def layer_ref(self):
-        return self._layer_ref
-
-    @layer_ref.setter
-    def layer_ref(self, value):
-        if isinstance(value, str):
-            self._layer_ref = value
-
-    @property
-    def net_node_type(self):
-        return self._net_node_type
-
-    @net_node_type.setter
-    def net_node_type(self, value):
-        if isinstance(value, int):
-            self._net_node_type = value
+        self.via = ""
+        self.standard_primitive_id = ""
 
     @property
     def exposure(self):
-        return self._exposure
+        if self._exposure == ExposureType.Exposed:
+            return "EXPOSED"
+        elif self._exposure == ExposureType.CoveredPrimary:
+            return "COVERED_PRIMARY"
+        elif self._exposure == ExposureType.CoveredSecondary:
+            return "COVERED_SECONDARY"
 
-    @exposure.setter
-    def exposure(self, value):
-        if isinstance(value, int):
-            self._exposure = value
-
-    @property
-    def via(self):
-        return self._via
-
-    @via.setter
-    def via(self, value):
-        if isinstance(value, bool):
-            self._via = value
-
-    @property
-    def standard_primitive_id(self):
-        return self._standard_primitive_id
-
-    @standard_primitive_id.setter
-    def standard_primitive_id(self, value):
-        if isinstance(value, str):
-            self._standard_primitive_id = value
-
-    def write_xml(self):
-        pass
+    def write_xml(self, phynet):
+        if phynet:
+            phynet_point = ET.SubElement(phynet, "PhyNetPoint")
+            phynet_point.set("x", self.x)
+            phynet_point.set("y", self.y)
+            phynet_point.set("layerRef", self.layer_ref)
+            phynet_point.set("netNode", self.net_node_type)
+            phynet_point.set("exposure", self.exposure)
+            phynet_point.set("via", self.via)
+            primitive_ref = ET.SubElement(phynet_point, "StandardPrimitiveRef")
+            primitive_ref.set("id", self.standard_primitive_id)
 
 
 class NetNodeType(object):

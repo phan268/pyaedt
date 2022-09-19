@@ -2,7 +2,7 @@ import xml.etree.cElementTree as ET
 
 from pyaedt.edb_core.IPC2581.ecad.cad_data.component.component import Component
 from pyaedt.edb_core.IPC2581.ecad.cad_data.layer_feature.layer_feature import LayerFeature
-from pyaedt.edb_core.IPC2581.ecad.cad_data.logical_net.logical_net import LogicalNets
+from pyaedt.edb_core.IPC2581.ecad.cad_data.logical_net.logical_net import LogicalNet
 from pyaedt.edb_core.IPC2581.ecad.cad_data.package.package import Package
 from pyaedt.edb_core.IPC2581.ecad.cad_data.padstack_def.padstack_def import PadstackDef
 from pyaedt.edb_core.IPC2581.ecad.cad_data.phy_net.phy_net import PhyNet
@@ -16,7 +16,7 @@ class Step(IPC2581):
         self._profile = Profile()
         self._packages = []
         self._components = []
-        self._logical_nets = LogicalNets()
+        self._logical_nets = []
         self._physical_nets = []
         self._layer_features = []
 
@@ -55,9 +55,9 @@ class Step(IPC2581):
         return self._logical_nets
 
     @logical_nets.setter
-    def logical_nets(self, value):
-        if isinstance(value, LogicalNets):
-            self._logical_nets = value
+    def add_logical_net(self, value):
+        if isinstance(value, LogicalNet):
+            self._logical_nets.append(value)
 
     @property
     def layer_features(self):
@@ -127,3 +127,5 @@ class Step(IPC2581):
                 package.write_xml(step)
             for component in self.components:
                 component.write_xml(step)
+            for logical_net in self.logical_nets:
+                logical_net.write_xml(step)
