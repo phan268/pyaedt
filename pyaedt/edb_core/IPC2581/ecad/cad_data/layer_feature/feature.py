@@ -43,23 +43,11 @@ class Feature(object):
             location.set("x", self.x)
             location.set("y", self.y)
             if self.feature_type == self.FeatureType.Polygon:
-                contour = ET.SubElement(feature, "Contour")
-                polygon = ET.SubElement(contour, "Polygon")
-                polygon_begin = ET.SubElement(polygon, "PolyBegin")
-                polygon_begin.set("x", self.polygon.poly_steps[0].x)
-                polygon_begin.set("y", self.polygon.poly_steps[0].y)
-                for poly_step in self.polygon.poly_steps[1:]:
-                    if poly_step.poly_type == 1:
-                        poly = ET.SubElement(polygon, "PolyStepSegment")
-                        poly.set("x", poly_step.x)
-                        poly.set("y", poly_step.y)
-                    elif poly_step.poly_type == 2:
-                        poly = ET.SubElement(polygon, "PolyStepCurve")
-                        poly.set("x", poly_step.x)
-                        poly.set("y", poly_step.y)
-                        poly.set("centerX", poly_step.center_X)
-                        poly.set("centerY", poly_step.center_y)
-                        poly.set("clockwise", poly_step.clock_wise)
+                for polygon in self.polygon:
+                    polygon.write_xml(feature)
+            elif self.feature_type == self.FeatureType.Paths:
+                for path in self.path:
+                    path.write_xml(feature)
 
     class FeatureType:
         (Polygon, Paths, Padstack, Via, Drill) = range(1, 5)
