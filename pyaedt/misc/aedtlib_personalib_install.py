@@ -114,6 +114,14 @@ def install_toolkit(toolkit_dir, product, aedt_version):
                 if not version_agnostic:
                     build_file_data = build_file_data.replace(" % version", "")
                 out_file.write(build_file_data)
+    if not os.path.isdir(os.path.join(tool_dir, "Lib")):
+        os.makedirs(os.path.join(tool_dir, "Lib"))
+    with open(os.path.join(tool_dir, "Lib", "__init__.py"), "w") as fid:
+        pass
+    shutil.copyfile(
+        os.path.join(current_dir, "pyaedt_toolkit_methods.py"), os.path.join(lib_dir, "pyaedt_toolkit_methods.py")
+    )
+
     shutil.copyfile(os.path.join(current_dir, "console_setup.py"), os.path.join(lib_dir, "console_setup.py"))
     shutil.copyfile(
         os.path.join(current_dir, "jupyter_template.ipynb"),

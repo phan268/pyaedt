@@ -15,9 +15,8 @@ was launched as well as the AEDT instance that has them open.
 import os
 import sys
 
-from System.Windows.Forms import MessageBox
-from System.Windows.Forms import MessageBoxButtons
-from System.Windows.Forms import MessageBoxIcon
+sys.path.append(os.path.normpath(os.path.dirname(os.path.realpath(__file__))))
+from Lib import pyaedt_toolkit_methods
 
 is_linux = os.name == "posix"
 script_name = os.path.splitext(os.path.basename(__file__))[0]
@@ -34,9 +33,11 @@ def main():
         version = oDesktop.GetVersion()[2:6].replace(".", "")
         python_exe = r"##PYTHON_EXE##" % version
         pyaedt_script = r"##PYTHON_SCRIPT##"
-        check_file(python_exe)
-        check_file(pyaedt_script)
+        pyaedt_toolkit_methods.check_file(oDesktop, python_exe)
+        pyaedt_toolkit_methods.check_file(oDesktop, pyaedt_script)
         if is_linux:
+            pyaedt_toolkit_methods.set_linux_environment(oDesktop)
+
             command = [
                 python_exe,
                 pyaedt_script,
@@ -54,19 +55,7 @@ def main():
             ]
             subprocess.Popen(" ".join(command), creationflags=CREATE_NO_WINDOW)
     except Exception as e:
-        show_error(str(e))
-
-
-def check_file(file_path):
-    if not os.path.isfile(file_path):
-        show_error('"{}" does not exist. Please click on the "Install PyAEDT" button in the Automation ribbon.'.format(
-            file_path))
-
-
-def show_error(msg):
-    oDesktop.AddMessage("", "", 2, str(msg))
-    MessageBox.Show(str(msg), "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-    sys.exit()
+        pyaedt_toolkit_methods.show_error(oDesktop, str(e))
 
 
 if __name__ == "__main__":
