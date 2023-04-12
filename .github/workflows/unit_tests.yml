@@ -10,6 +10,7 @@ env:
   # It applies 7 days retention policy by default.
   RESET_PIP_CACHE: 0
   PACKAGE_NAME: PyAEDT
+  ANS_LICENSE_SERVER: ${{ secrets.LICENSE_SERVER }}
 # Controls when the workflow will run
 on:
   # Triggers the workflow on push or pull request events but only for the main branch
