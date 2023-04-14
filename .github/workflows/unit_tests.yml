@@ -43,6 +43,31 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: "set license server"
+        run: |
+          @echo off
+          set ANS_LICENSE_SERVER=toto
+
+          set "license_file=%ANSYSLIC_DIR%\ansyslmd.ini"
+
+          if exist "%license_file%" (
+          echo %license_file% exists
+          ) else (
+          exit
+          )
+
+          >nul findstr /c:"SERVER=1055@%ANS_LICENSE_SERVER%" "%license_file%" && (
+          echo The license server is already set up.
+          exit /b
+          ) || (
+          goto :writeserver
+          )
+
+          :writeserver
+          echo SERVER=1055@%ANS_LICENSE_SERVER%>> "%license_file%"
+          echo ANSYSLI_SERVERS=2325@%ANS_LICENSE_SERVER%>> "%license_file%"
+          exit /b
+
       - name: 'Create virtual env'
         run: |
           python -m venv testenv
