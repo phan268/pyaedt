@@ -47,8 +47,8 @@ def parse_arguments():
         "--student", "--student_version", action="store_true", help="Install toolkits for AEDT Student Version."
     )
     parser.add_argument("--sys_lib", "--syslib", action="store_true", help="Install toolkits in SysLib.")
-    parser.add_argument("--sys_lib_dir", help="SysLib directory.")
-    parser.add_argument("--personal_lib_dir", help="PersonalLib directory.")
+    parser.add_argument("--sys_lib_dir", "--syslib_dir", help="SysLib directory.")
+    parser.add_argument("--personal_lib_dir", "--personallib_dir", help="PersonalLib directory.")
     parser.add_argument(
         "--new_session", action="store_true", help="Start a new session of AEDT after installing PyAEDT."
     )
