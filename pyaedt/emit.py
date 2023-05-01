@@ -96,8 +96,8 @@ class Emit(Design, object):
     The output of the run command is an ``interaction`` object. This object summarizes the interaction data
     that is defined in the interaction domain.
 
-    >>> instance = interaction.worst_instance(Emit.result_type().sensitivity)
-    >>> val = instance.value(Emit.result_type().sensitivity)
+    >>> instance = interaction.worst_instance(EmitConstants.ResultType.SENSITIVITY)
+    >>> val = instance.value(EmitConstants.ResultType.SENSITIVITY)
     >>> print("Worst-case sensitivity for Rx '{}' is {}dB.".format(domain.rx_radio_name, val))
     """
 
@@ -236,13 +236,13 @@ class Emit(Design, object):
             ``True`` if the units were successfully changed and ``False``
             if there was an error.
         """
-        valid_type = EmitConstants.EMIT_UNIT_TYPE
+        valid_types = EmitConstants.EMIT_UNIT_TYPES
         valid_units = EmitConstants.EMIT_VALID_UNITS
 
         if isinstance(unit_type, list):
             for t, v in zip(unit_type, unit_value):
-                if t not in valid_type:
-                    warnings.warn("[{}] units are not supported by EMIT. The options are: {}: ".format(t, valid_type))
+                if t not in valid_types:
+                    warnings.warn("[{}] units are not supported by EMIT. The options are: {}: ".format(t, valid_types))
                     return False
                 if v not in valid_units[t]:
                     warnings.warn("[{}] are not supported by EMIT. The options are: {}: ".format(v, valid_units[t]))
@@ -251,9 +251,9 @@ class Emit(Design, object):
                 self._emit_api.set_units(ut, v)
                 self._units[t] = v
         else:
-            if unit_type not in valid_type:
+            if unit_type not in valid_types:
                 warnings.warn(
-                    "[{}] units are not supported by EMIT. The options are: {}: ".format(unit_type, valid_type)
+                    "[{}] units are not supported by EMIT. The options are: {}: ".format(unit_type, valid_types)
                 )
                 return False
             if unit_value not in valid_units[unit_type]:
@@ -285,10 +285,10 @@ class Emit(Design, object):
         """
         if not unit_type:
             return self._units
-        if unit_type not in EmitConstants.EMIT_UNIT_TYPE:
+        if unit_type not in EmitConstants.EMIT_UNIT_TYPES:
             warnings.warn(
                 "[{}] units are not supported by EMIT. The options are: {}: ".format(
-                    unit_type, EmitConstants.EMIT_UNIT_TYPE
+                    unit_type, EmitConstants.EMIT_UNIT_TYPES
                 )
             )
             return None

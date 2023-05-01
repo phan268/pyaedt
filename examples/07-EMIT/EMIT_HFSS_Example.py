@@ -114,9 +114,9 @@ for link in aedtapp.couplings.coupling_names:
 
 if desktop_version > "2023.1":
     rev = aedtapp.results.analyze()
-    modeRx = econsts.tx_rx_mode().rx
-    modeTx = econsts.tx_rx_mode().tx
-    modeEmi = econsts.result_type().emi
+    modeRx = econsts.TxRxMode.RX
+    modeTx = econsts.TxRxMode.TX
+    modeEmi = econsts.ResultType.EMI
     rx_bands = rev.get_band_names(rad1.name, modeRx) 
     tx_bands = rev.get_band_names(rad2.name, modeTx) 
     domain = aedtapp.results.interaction_domain()

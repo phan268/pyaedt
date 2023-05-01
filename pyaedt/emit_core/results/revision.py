@@ -198,7 +198,7 @@ class Revision:
         """
         if self.revision_loaded:
             radios = self.emit_project._emit_api.get_radio_names(
-                emitConsts.tx_rx_mode().rx, emitConsts.interferer_type().transmitters_and_emitters
+                emitConsts.TxRxMode.RX, emitConsts.InterfererType.TRANSMITTERS_AND_EMITTERS
             )
         else:
             radios = None
@@ -235,9 +235,9 @@ class Revision:
         >>> both = aedtapp.results.current_revision.get_interferer_names(ix_type)
         """
         if interferer_type is None:
-            interferer_type = emitConsts.interferer_type().transmitters_and_emitters
+            interferer_type = emitConsts.InterfererType.TRANSMITTERS_AND_EMITTERS
         if self.revision_loaded:
-            radios = self.emit_project._emit_api.get_radio_names(emitConsts.tx_rx_mode().tx, interferer_type)
+            radios = self.emit_project._emit_api.get_radio_names(emitConsts.TxRxMode.TX, interferer_type)
         else:
             radios = None
             self.result_mode_error()

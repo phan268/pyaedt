@@ -102,10 +102,7 @@ class Results:
         >>> domain = Emit.results.InteractionDomain()
 
         """
-        try:
-            domain = emit_core.emit_api_python().InteractionDomain()
-        except NameError:
-            raise ValueError("An Emit object must be initialized before any static member of the Results.")
+        domain = emit_core.emit_api_python().InteractionDomain()
         return domain
 
     @pyaedt_function_handler

@@ -1,87 +1,34 @@
 from pyaedt import emit_core
+import sys
 
+# Use a class to apply properties to the EmitConstants module
+class This(sys.__class__):  # sys.__class__ is <class 'module'>
 
-def result_type():
-    """
-    Get a result type.
+    @property
+    def UnitType(self):
+        return emit_core.emit_api_python().UnitType
+    #UnitType = emit_core.emit_api_python().UnitType
+    """UnitType enum."""
 
-    Returns
-    -------
-    :class:`EmitConstants.result_type`
-        Result status which can later be assigned a status
-        (emi, sensitivity, desense, powerAtRx).
+    @property
+    def ResultType(self):
+        return emit_core.emit_api_python().ResultType
+    """ResultType enum."""
 
-    Examples
-    --------
-    >>> tx_rx = EmitConstants.result_type()
+    @property
+    def TxRxMode(self):
+        return emit_core.emit_api_python().TxRxMode
+    """TxRxMode enum."""
 
-    """
-    try:
-        result = emit_core.emit_api_python().result_type()
-    except NameError:
-        raise ValueError("An Emit object must be initialized before any static member of EmitConstants is accessed.")
-    return result
+    @property
+    def InterfererType(self):
+        return emit_core.emit_api_python().InterfererType
+    """InterfererType enum."""
 
+sys.modules[__name__].__class__ = This  # change module class into This
 
-def tx_rx_mode():
-    """
-    Get a ``tx_rx_mode`` object.
-
-    Returns
-    -------
-    :class:`EmitConstants.tx_rx_mode`
-        Mode status which can later be assigned a status (tx, rx).
-
-    Examples
-    --------
-    >>> tx_rx = EmitConstants.tx_rx_mode()
-
-    """
-    try:
-        tx_rx = emit_core.emit_api_python().tx_rx_mode()
-    except NameError:
-        raise ValueError("An Emit object must be initialized before any static member of EmitConstants is accessed.")
-    return tx_rx
-
-
-def interferer_type():
-    """Get an ``interferer_type`` object.
-
-    Returns
-    -------
-    :class:`EmitConstants.interferer_type`
-        Type of interferer: transmitters, emitters, or transmitters_and_emitters.
-
-    Examples
-    >>> int_type = EmitConstants.interferer_type()
-    >>> tx_only = int_type.transmitters
-    """
-    try:
-        inter_type = emit_core.emit_api_python().interferer_type()
-    except NameError:
-        raise ValueError("An Emit object must be initialized before any static member of EmitConstants is accessed.")
-    return inter_type
-
-
-def unit_type():
-    """Get a ``unit_type`` object.
-    Returns
-    -------
-    :class:`EmitConstants.unit_type`
-        Type of unit. Options are ``"Power"``, ``"Frequency"``, ``"Length"``,
-        ``"Time"``, ``"Voltage"``, ``"DataRate"``, and ``"Resistance"``.
-    Examples
-    >>> unit_type = EmitConstants.unit_type()
-    """
-    try:
-        unit_type = emit_core.emit_api_python().unit_type()
-    except NameError:
-        raise ValueError("An Emit object must be initialized before any static member of EmitConstants is accessed.")
-    return unit_type
-
-
-EMIT_UNIT_TYPE = ["Power", "Frequency", "Length", "Time", "Voltage", "Data Rate", "Resistance"]
-"""Valid unit type."""
+EMIT_UNIT_TYPES = ["Power", "Frequency", "Length", "Time", "Voltage", "Data Rate", "Resistance"]
+"""Valid unit types."""
 
 EMIT_VALID_UNITS = {
     "Power": ["mW", "W", "kW", "dBm", "dBW"],
@@ -97,12 +44,12 @@ EMIT_VALID_UNITS = {
 
 def emit_unit_type_string_to_enum(unit_string):
     EMIT_UNIT_TYPE_STRING_TO_ENUM = {
-        "Power": unit_type().power,
-        "Frequency": unit_type().frequency,
-        "Length": unit_type().length,
-        "Time": unit_type().time,
-        "Voltage": unit_type().voltage,
-        "Data Rate": unit_type().dataRate,
-        "Resistance": unit_type().resistance,
+        "Power": emit_core.EmitConstants.UnitType.POWER,
+        "Frequency": emit_core.EmitConstants.UnitType.FREQUENCY,
+        "Length": emit_core.EmitConstants.UnitType.LENGTH,
+        "Time": emit_core.EmitConstants.UnitType.TIME,
+        "Voltage": emit_core.EmitConstants.UnitType.VOLTAGE,
+        "Data Rate": emit_core.EmitConstants.UnitType.DATA_RATE,
+        "Resistance": emit_core.EmitConstants.UnitType.RESISTANCE,
     }
     return EMIT_UNIT_TYPE_STRING_TO_ENUM[unit_string]

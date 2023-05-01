@@ -13,7 +13,10 @@ def emit_api_python():
     """
     Get the Emit backend API.
 
+    The backend API is available once a pyaedt.Emit() object has been created. An Exception is raised if this method is called before a pyaedt.Emit() object has been created.
     """
+    if not EMIT_API_PYTHON:
+        raise Exception("A pyaedt.Emit() object must be initialized before using the EMIT API.")
     return EMIT_API_PYTHON
 
 
@@ -24,6 +27,6 @@ def _set_api(aedt_version):
     desktop_path = os.environ.get(aedt_version)
     if desktop_path and numeric_version > 231:
         path = os.path.join(desktop_path, "Delcross")
-        sys.path.append(path)
+        sys.path.insert(0, path)
         global EMIT_API_PYTHON
         EMIT_API_PYTHON = import_module("EmitApiPython")
