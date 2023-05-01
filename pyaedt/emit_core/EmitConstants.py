@@ -1,29 +1,35 @@
-from pyaedt import emit_core
 import sys
+
+from pyaedt import emit_core
+
 
 # Use a class to apply properties to the EmitConstants module
 class This(sys.__class__):  # sys.__class__ is <class 'module'>
-
     @property
     def UnitType(self):
         return emit_core.emit_api_python().UnitType
-    #UnitType = emit_core.emit_api_python().UnitType
+
+    # UnitType = emit_core.emit_api_python().UnitType
     """UnitType enum."""
 
     @property
     def ResultType(self):
         return emit_core.emit_api_python().ResultType
+
     """ResultType enum."""
 
     @property
     def TxRxMode(self):
         return emit_core.emit_api_python().TxRxMode
+
     """TxRxMode enum."""
 
     @property
     def InterfererType(self):
         return emit_core.emit_api_python().InterfererType
+
     """InterfererType enum."""
+
 
 sys.modules[__name__].__class__ = This  # change module class into This
 
