@@ -85,11 +85,11 @@ if os.path.exists(local_config_file):
         local_config = json.load(f)
     config.update(local_config)
 
-settings.use_grpc_api = config.get("use_grpc", True)
 settings.non_graphical = config["NonGraphical"]
 settings.disable_bounding_box_sat = config["disable_sat_bounding_box"]
 settings.enable_local_log_file = False
 settings.enable_global_log_file = False
+settings.number_of_grpc_api_retries = 6
 test_folder = "unit_test" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 for filename in os.listdir(tempfile.gettempdir()):
     file_path = os.path.join(tempfile.gettempdir(), filename)
@@ -127,6 +127,7 @@ class BasisTest(object):
         self._main = sys.modules["__main__"]
         self.desktop = None
         self._main.desktop_pid = 0
+        settings.use_grpc_api = config.get("use_grpc", True)
         if launch_desktop:
             self.desktop = Desktop(desktop_version, NONGRAPHICAL, new_thread)
             self.desktop.disable_autosave()
