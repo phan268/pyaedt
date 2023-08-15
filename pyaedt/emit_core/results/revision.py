@@ -231,12 +231,8 @@ class Revision:
         if self.revision_loaded:
             radios = self.emit_project._emit_api.get_radio_names(TxRxMode.RX, InterfererType.TRANSMITTERS_AND_EMITTERS)
         else:
-            radios = None
             err_msg = self.result_mode_error()
-            warnings.warn(err_msg)
-            return radios
-        if len(radios) == 0:
-            warnings.warn("No valid receivers in the project.")
+            raise RuntimeError(err_msg)
         return radios
 
     @pyaedt_function_handler()
@@ -269,13 +265,8 @@ class Revision:
         if self.revision_loaded:
             radios = self.emit_project._emit_api.get_radio_names(TxRxMode.TX, interferer_type)
         else:
-            radios = None
             err_msg = self.result_mode_error()
-            warnings.warn(err_msg)
-            return radios
-        if len(radios) == 0:
-            warnings.warn("No valid radios or emitters in the project.")
-            return None
+            raise RuntimeError(err_msg)
         return radios
 
     @pyaedt_function_handler()
@@ -307,11 +298,8 @@ class Revision:
         if self.revision_loaded:
             bands = self.emit_project._emit_api.get_band_names(radio_name, tx_rx_mode)
         else:
-            bands = None
-            self.result_mode_error()
             err_msg = self.result_mode_error()
-            warnings.warn(err_msg)
-            return bands
+            raise RuntimeError(err_msg)
         return bands
 
     @pyaedt_function_handler()
@@ -346,10 +334,8 @@ class Revision:
         if self.revision_loaded:
             freqs = self.emit_project._emit_api.get_active_frequencies(radio_name, band_name, tx_rx_mode, units)
         else:
-            freqs = None
             err_msg = self.result_mode_error()
-            warnings.warn(err_msg)
-            return freqs
+            raise RuntimeError(err_msg)
         return freqs
 
     @property

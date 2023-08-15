@@ -1,5 +1,6 @@
 # Import required modules
 import os
+import re
 import sys
 
 from _unittest_solvers.conftest import config
@@ -35,13 +36,11 @@ def aedtapp(add_app):
 
 @pytest.mark.skipif(is_linux, reason="Emit API fails on linux.")
 class TestClass:
-
-
     @pytest.fixture(autouse=True)
     def init(self, aedtapp, local_scratch):
         self.aedtapp = aedtapp
         self.local_scratch = local_scratch
-
+    
     def test_objects(self):
         assert self.aedtapp.solution_type
         assert isinstance(self.aedtapp.modeler.components, EmitComponents)
@@ -268,11 +267,11 @@ class TestClass:
 
         # Test bad units
         power = 10
-        bad_units = consts.unit_converter(power, "Power", "dbw", "dBm")
-        assert bad_units == power
+        with pytest.raises(Exception, match=re.escape("Unknown units: 'dbw'")):
+            bad_units = consts.unit_converter(power, "Power", "dbw", "dBm")
         power = 30
-        bad_units = consts.unit_converter(power, "Power", "w", "dBm")
-        assert bad_units == power
+        with pytest.raises(Exception, match=re.escape("Unknown units: 'w'")):
+            bad_units = consts.unit_converter(power, "Power", "w", "dBm")
 
     @pytest.mark.skipif(config["desktopVersion"] <= "2023.1", reason="Skipped on versions earlier than 2023 R2.")
     def test_units_getters(self, add_app):
@@ -285,14 +284,26 @@ class TestClass:
         assert units == "Hz"
 
         # Test bad unit input
-        units = self.aedtapp.get_units("Bad units")
-        assert units == None
+        with pytest.raises(
+            Exception,
+            match=re.escape(
+                "[Bad units] units are not supported by EMIT. The options are: Power, Frequency, Length, Time, Voltage, Data Rate, Resistance"
+            ),
+        ):
+            units = self.aedtapp.get_units("Bad units")
 
-        valid = self.aedtapp.set_units("Bad units", "Hz")
-        assert valid is False
+        with pytest.raises(
+            Exception,
+            match=re.escape(
+                "[Bad units] units are not supported by EMIT. The options are: Power, Frequency, Length, Time, Voltage, Data Rate, Resistance"
+            ),
+        ):
+            valid = self.aedtapp.set_units("Bad units", "Hz")
 
-        valid = self.aedtapp.set_units("Frequency", "hertz")
-        assert valid is False
+        with pytest.raises(
+            Exception, match=re.escape("[hertz] are not supported by EMIT. The options are: Hz, kHz, MHz, GHz, THz")
+        ):
+            valid = self.aedtapp.set_units("Frequency", "hertz")
 
         # Set a list of units
         unit_system = ["Power", "Frequency", "Length", "Time", "Voltage", "Data Rate", "Resistance"]
@@ -313,13 +324,20 @@ class TestClass:
         # Set a bad list of units
         unit_system = ["Por", "Frequency", "Length", "Time", "Voltage", "Data Rate", "Resistance"]
         units = ["mW", "GHz", "nm", "ps", "mV", "Gbps", "uOhm"]
-        valid = self.aedtapp.set_units(unit_system, units)
-        assert valid is False
+        with pytest.raises(
+            Exception,
+            match=re.escape(
+                "[Por] units are not supported by EMIT. The options are: Power, Frequency, Length, Time, Voltage, Data Rate, Resistance"
+            ),
+        ):
+            valid = self.aedtapp.set_units(unit_system, units)
 
         unit_system = ["Power", "Frequency", "Length", "Time", "Voltage", "Data Rate", "Resistance"]
         units = ["mW", "f", "nm", "ps", "mV", "Gbps", "uOhm"]
-        valid = self.aedtapp.set_units(unit_system, units)
-        assert valid is False
+        with pytest.raises(
+            Exception, match=re.escape("[f] are not supported by EMIT. The options are: Hz, kHz, MHz, GHz, THz")
+        ):
+            valid = self.aedtapp.set_units(unit_system, units)
 
     @pytest.mark.skipif(config["desktopVersion"] <= "2023.1", reason="Skipped on versions earlier than 2023 R2.")
     def test_antenna_component(self, add_app):
@@ -382,14 +400,14 @@ class TestClass:
         assert rev_timestamp == rev3.timestamp
 
         # test result_mode_error(), try to access unloaded revision
-        receivers = rev2.get_receiver_names()
-        assert receivers is None
-        transmitters = rev2.get_interferer_names()
-        assert transmitters is None
-        bands = rev2.get_band_names(rad5)
-        assert bands is None
-        freqs = rev2.get_active_frequencies(rad5, "Band", TxRxMode.TX)
-        assert freqs is None
+        with pytest.raises(Exception, match="This function is inaccessible when the revision is not loaded.") as e:
+            receivers = rev2.get_receiver_names()
+        with pytest.raises(Exception, match="This function is inaccessible when the revision is not loaded.") as e:
+            transmitters = rev2.get_interferer_names()
+        with pytest.raises(Exception, match="This function is inaccessible when the revision is not loaded.") as e:
+            bands = rev2.get_band_names(rad5)
+        with pytest.raises(Exception, match="This function is inaccessible when the revision is not loaded.") as e:
+            freqs = rev2.get_active_frequencies(rad5, "Band", TxRxMode.TX)
 
         # get the most recent revision
         # there are changes, so it should be a new revision
@@ -682,15 +700,14 @@ class TestClass:
         assert str(type(ResultType.POWER_AT_RX)) == "<class '{}.result_type'>".format(py_version)
 
     @pytest.mark.skipif(config["desktopVersion"] <= "2023.1", reason="Skipped on versions earlier than 2023.2")
-    def test_version(self, add_app):
-        self.aedtapp = add_app(application=Emit)
+    def test_version(self):
         less_info = self.aedtapp.version(False)
         more_info = self.aedtapp.version(True)
         if less_info:
             assert str(type(less_info)) == "<class 'str'>"
             assert str(type(more_info)) == "<class 'str'>"
             assert len(more_info) > len(less_info)
-
+    
     @pytest.mark.skipif(
         config["desktopVersion"] <= "2023.1",
         reason="Skipped on versions earlier than 2023.2",
@@ -1045,11 +1062,56 @@ class TestClass:
             assert protection_colors == expected_protection_colors
             assert protection_power_matrix == expected_protection_power
 
+    @pytest.mark.skipif(config["desktopVersion"] < "2024.1", reason="Skipped on versions earlier than 2024.1")
+    def test_result_categories(self, add_app):
+        # set up project and run
+        self.aedtapp = add_app(application=Emit)
+        rad1 = self.aedtapp.modeler.components.create_component("GPS Receiver")
+        ant1 = self.aedtapp.modeler.components.create_component("Antenna")
+        ant1.move_and_connect_to(rad1)
+        for band in rad1.bands():
+            band.enabled = True
+        rad2 = self.aedtapp.modeler.components.create_component("Bluetooth Low Energy (LE)")
+        ant2 = self.aedtapp.modeler.components.create_component("Antenna")
+        ant2.move_and_connect_to(rad2)
+        rev = self.aedtapp.results.analyze()
+        domain = self.aedtapp.results.interaction_domain()
+        interaction = rev.run(domain)
+
+        # initially all categories are enabled
+        for category in EmiCategoryFilter.members():
+            assert rev.get_emi_category_filter_enabled(category)
+
+        # confirm the emi value when all categories are enabled
+        instance = interaction.get_worst_instance(ResultType.EMI)
+        assert instance.get_value(ResultType.EMI) == 16.64
+        assert instance.get_largest_emi_problem_type() == "In-Channel: Broadband"
+
+        # disable one category and confirm the emi value changes
+        rev.set_emi_category_filter_enabled(EmiCategoryFilter.IN_CHANNEL_TX_BROADBAND, False)
+        instance = interaction.get_worst_instance(ResultType.EMI)
+        assert instance.get_value(ResultType.EMI) == 2.0
+        assert instance.get_largest_emi_problem_type() == "Out-of-Channel: Tx Fundamental"
+
+        # disable another category and confirm the emi value changes
+        rev.set_emi_category_filter_enabled(EmiCategoryFilter.OUT_OF_CHANNEL_TX_FUNDAMENTAL, False)
+        instance = interaction.get_worst_instance(ResultType.EMI)
+        assert instance.get_value(ResultType.EMI) == -58.0
+        assert instance.get_largest_emi_problem_type() == "Out-of-Channel: Tx Harmonic/Spurious"
+
+        # disable last existing category and confirm expected exceptions and error messages
+        rev.set_emi_category_filter_enabled(EmiCategoryFilter.OUT_OF_CHANNEL_TX_HARMONIC_SPURIOUS, False)
+        instance = interaction.get_worst_instance(ResultType.EMI)
+        with pytest.raises(RuntimeError, match="Unable to evaluate value: No power received."):
+            instance.get_value(ResultType.EMI)
+        with pytest.raises(RuntimeError, match="An EMI value is not available so the largest EMI problem type is undefined."):
+            instance.get_largest_emi_problem_type()
+
+
     """
     .. note::
     The following test should be maintained as the last test within this file to ensure
     that the AEDT app functions as intended.
-
     """
 
     @pytest.mark.skipif(config["desktopVersion"] <= "2022.1", reason="Skipped on versions earlier than 2021.2")
@@ -1092,52 +1154,3 @@ class TestClass:
         for key in antenna_nodes.keys():
             assert antenna_nodes[key].name == antenna_names[i]
             i += 1
-
-    @pytest.mark.skipif(
-        config["desktopVersion"] < "2024.1", reason="Skipped on versions earlier than 2024.1"
-    )
-    def test_result_categories(self, add_app):
-        # set up project and run
-        self.aedtapp = add_app(application=Emit)
-        rad1 = self.aedtapp.modeler.components.create_component("GPS Receiver")
-        ant1 = self.aedtapp.modeler.components.create_component("Antenna")
-        ant1.move_and_connect_to(rad1)
-        for band in rad1.bands():
-            band.enabled = True
-        rad2 = self.aedtapp.modeler.components.create_component("Bluetooth Low Energy (LE)")
-        ant2 = self.aedtapp.modeler.components.create_component("Antenna")
-        ant2.move_and_connect_to(rad2)
-        rev = self.aedtapp.results.analyze()
-        domain = self.aedtapp.results.interaction_domain()
-        interaction = rev.run(domain)
-
-        # initially all categories are enabled
-        for category in EmiCategoryFilter.members():
-            assert rev.get_emi_category_filter_enabled(category)
-
-        # confirm the emi value when all categories are enabled
-        instance = interaction.get_worst_instance(ResultType.EMI)
-        assert instance.get_value(ResultType.EMI) == 16.64
-        assert instance.get_largest_emi_problem_type() == "In-Channel: Broadband"
-
-        # disable one category and confirm the emi value changes
-        rev.set_emi_category_filter_enabled(EmiCategoryFilter.IN_CHANNEL_TX_BROADBAND, False)
-        instance = interaction.get_worst_instance(ResultType.EMI)
-        assert instance.get_value(ResultType.EMI) == 2.0
-        assert instance.get_largest_emi_problem_type() == "Out-of-Channel: Tx Fundamental"
-
-        # disable another category and confirm the emi value changes
-        rev.set_emi_category_filter_enabled(EmiCategoryFilter.OUT_OF_CHANNEL_TX_FUNDAMENTAL, False)
-        instance = interaction.get_worst_instance(ResultType.EMI)
-        assert instance.get_value(ResultType.EMI) == -58.0
-        assert instance.get_largest_emi_problem_type() == "Out-of-Channel: Tx Harmonic/Spurious"
-
-        # disable last existing category and confirm expected exceptions and error messages
-        rev.set_emi_category_filter_enabled(EmiCategoryFilter.OUT_OF_CHANNEL_TX_HARMONIC_SPURIOUS, False)
-        instance = interaction.get_worst_instance(ResultType.EMI)
-        with pytest.raises(RuntimeError) as e:
-            instance.get_value(ResultType.EMI)
-            assert "Unable to evaluate value: No power received." in str(e)
-        with pytest.raises(RuntimeError) as e:
-            instance.get_largest_emi_problem_type()
-            assert "An EMI value is not available so the largest EMI problem type is undefined." in str(e)

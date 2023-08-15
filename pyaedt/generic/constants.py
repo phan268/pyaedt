@@ -163,11 +163,9 @@ def unit_converter(values, unit_system="Length", input_units="meter", output_uni
     """
     if unit_system in AEDT_UNITS:
         if input_units not in AEDT_UNITS[unit_system]:
-            warnings.warn("Unknown units: '{}'".format(input_units))
-            return values
+            raise ValueError("Unknown units: '{}'".format(input_units))
         elif output_units not in AEDT_UNITS[unit_system]:
-            warnings.warn("Unknown units: '{}'".format(output_units))
-            return values
+            raise ValueError("Unknown units: '{}'".format(output_units))
         else:
             input_is_list = isinstance(values, list)
             if not input_is_list:
