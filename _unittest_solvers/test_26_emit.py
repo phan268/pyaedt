@@ -35,6 +35,28 @@ class TestClass:
         self.aedtapp = aedtapp
         self.local_scratch = local_scratch
 
+    def test_objects(self):
+        assert self.aedtapp.solution_type
+        assert isinstance(self.aedtapp.modeler.components, EmitComponents)
+        assert self.aedtapp.modeler
+        assert self.aedtapp.oanalysis is None
+        if self.aedtapp._aedt_version > "2023.1":
+            if sys.version_info.major == 3 and sys.version_info.minor == 7:
+                assert str(type(self.aedtapp._emit_api)) == "<class 'EmitApiPython.EmitApi'>"
+                assert self.aedtapp.results is not None
+            elif sys.version_info.major == 3 and sys.version_info.minor == 8:
+                assert str(type(self.aedtapp._emit_api)) == "<class 'EmitApiPython38.EmitApi'>"
+                assert self.aedtapp.results is not None
+            elif sys.version_info.major == 3 and sys.version_info.minor == 9:
+                assert str(type(self.aedtapp._emit_api)) == "<class 'EmitApiPython39.EmitApi'>"
+                assert self.aedtapp.results is not None
+            elif sys.version_info.major == 3 and sys.version_info.minor == 10:
+                assert str(type(self.aedtapp._emit_api)) == "<class 'EmitApiPython310.EmitApi'>"
+                assert self.aedtapp.results is not None
+            elif sys.version_info.major == 3 and sys.version_info.minor == 11:
+                assert str(type(self.aedtapp._emit_api)) == "<class 'EmitApiPython311.EmitApi'>"
+                assert self.aedtapp.results is not None
+
     # def test_objects(self):
     #     assert self.aedtapp.solution_type
     #     assert isinstance(self.aedtapp.modeler.components, EmitComponents)
