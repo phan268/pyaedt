@@ -2734,7 +2734,7 @@ class Icepak(FieldAnalysis3D):
         if is_linux:
             fl_ucommand = ["bash"] + fl_ucommand + [fl_uscript_file_pointer]
         else:
-            fl_ucommand = ["bash"] + fl_ucommand + ['"' + fl_uscript_file_pointer + '"']
+            fl_ucommand = fl_ucommand + ['"' + fl_uscript_file_pointer + '"']
         self.logger.info(" ".join(fl_ucommand))
         subprocess.call(fl_ucommand)
         if os.path.exists(mesh_file_pointer):
