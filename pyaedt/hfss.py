@@ -30,7 +30,6 @@ from pyaedt.modules.SetupTemplates import SetupKeys
 
 
 class Hfss(FieldAnalysis3D, object):
-    asdasddldl
     """Provides the HFSS application interface.
 
     This class allows you to create an interactive instance of HFSS and
