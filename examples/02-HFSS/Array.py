@@ -3,8 +3,8 @@
 #   jupytext:
 #     text_representation:
 #       extension: .py
-#       format_name: sphinx
-#       format_version: '1.1'
+#       format_name: percent
+#       format_version: '1.3'
 #       jupytext_version: 1.14.5
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
@@ -12,6 +12,10 @@
 #     name: python3
 # ---
 
+# %%
+# %matplotlib inline
+
+# %% [markdown]
 """
 HFSS: component antenna array
 -----------------------------
@@ -19,34 +23,38 @@ This example shows how you can use PyAEDT to create an example using a 3D compon
 the analysis, solves it, and uses postprocessing functions to create plots using Matplotlib and
 PyVista without opening the HFSS user interface. This examples runs only on Windows using CPython.
 """
-##########################################################
+# %% [markdown]
 # # Perform required imports
 #
 # Perform required imports.
 
+# %%
 import os
 import pyaedt
 
-##########################################################
+# %% [markdown]
 # ## Set non-graphical mode
 #
 # Set non-graphical mode. 
 # You can set ``non_graphical`` either to ``True`` or ``False``.
 
+# %%
 non_graphical = False
 
-##########################################################
+# %% [markdown]
 # ## Download 3D component
 #
 # Download the 3D component that is needed to run the example.
 
+# %%
 example_path = pyaedt.downloads.download_3dcomponent()
 
-##########################################################
+# %% [markdown]
 # ## Launch HFSS and save project
 #
 # Launch HFSS and save the project.
 
+# %%
 project_name = pyaedt.generate_unique_project_name(project_name="array")
 hfss = pyaedt.Hfss(projectname=project_name,
                    specified_version="2023.2",
@@ -56,7 +64,7 @@ hfss = pyaedt.Hfss(projectname=project_name,
 
 print("Project name " + project_name)
 
-##########################################################
+# %% [markdown]
 # ## Read array definition from JSON file
 #
 # Read the array definition from a JSON file. A JSON file
@@ -67,57 +75,63 @@ print("Project name " + project_name)
 # into the dictionary from the path that you specify. The following
 # code edits the dictionary to point to the location of the A3DCOMP file.
 
+# %%
 dict_in = pyaedt.data_handler.json_to_dict(os.path.join(example_path, "array_simple.json"))
 dict_in["Circ_Patch_5GHz1"] = os.path.join(example_path, "Circ_Patch_5GHz.a3dcomp")
 dict_in["cells"][(3, 3)] = {"name": "Circ_Patch_5GHz1"}
 array = hfss.add_3d_component_array_from_json(dict_in)
 
-##########################################################
+# %% [markdown]
 # ## Modify cells
 #
 # Make center element passive and rotate corner elements.
 
+# %%
 array.cells[1][1].is_active = False
 array.cells[0][0].rotation = 90
 array.cells[0][2].rotation = 90
 array.cells[2][0].rotation = 90
 array.cells[2][2].rotation = 90
 
-##########################################################
+# %% [markdown]
 # ## Set up simulation
 #
 # Set up a simulation and analyze it.
 
+# %%
 setup = hfss.create_setup()
 setup.props["Frequency"] = "5GHz"
 setup.props["MaximumPasses"] = 3
 
 hfss.analyze(num_cores=4)
 
-##########################################################
+# %% [markdown]
 # ## Get far field data
 #
 # Get far field data. After the simulation completes, the far
 # field data is generated port by port and stored in a data class.
 
+# %%
 ffdata = hfss.get_antenna_ffd_solution_data(sphere_name="Infinite Sphere1", setup_name=hfss.nominal_adaptive,
                                             frequencies=[5e9])
 
-##########################################################
+# %% [markdown]
 # ## Generate contour plot
 #
 # Generate a contour plot. You can define the Theta scan
 # and Phi scan.
 
+# %%
 ffdata.plot_farfield_contour(qty_str='RealizedGain', convert_to_db=True,
                              title='Contour at {}Hz'.format(ffdata.frequency))
 
-##########################################################
+# %% [markdown]
 # ## Generate 2D cutout plots
 #
 # Generate 2D cutout plots. You can define the Theta scan
 # and Phi scan.
 
+# %%
 ffdata.plot_2d_cut(primary_sweep='theta', secondary_sweep_value=[-180, -75, 75],
                    qty_str='RealizedGain',
                    title='Azimuth at {}Hz'.format(ffdata.frequency),
@@ -128,33 +142,37 @@ ffdata.plot_2d_cut(primary_sweep="phi", secondary_sweep_value=30,
                    title='Elevation',
                    convert_to_db=True)
 
-##########################################################
+# %% [markdown]
 # ## Generate 3D polar plots in Matplotlib
 #
 # Generate 3D polar plots in Matplotlib. You can define
 # the Theta scan and Phi scan.
 
+# %%
 ffdata.polar_plot_3d(qty_str='RealizedGain',
                      convert_to_db=True)
 
-##########################################################
+# %% [markdown]
 # ## Generate 3D plots in PyVista
 #
 # Generate 3D plots in PyVista. You can define the Theta and Phi
 # scan angles. You can change the easy-to-use interactive plot
 # that is generated on the fly. 
 
+# %%
 ffdata.polar_plot_3d_pyvista(qty_str='RealizedGain',
                              convert_to_db=True,
                              export_image_path=os.path.join(hfss.working_directory, "picture.jpg"),
                              show=False)
 
-##########################################################
+# %% [markdown]
 # ## Release AEDT
 #
 # Release AEDT.
 
+# %%
 hfss.release_desktop()
 
-""
+# %% [markdown]
+#
 
