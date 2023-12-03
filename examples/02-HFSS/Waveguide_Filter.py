@@ -1,3 +1,17 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: sphinx
+#       format_version: '1.1'
+#       jupytext_version: 1.14.5
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
 """
 HFSS: Inductive Iris waveguide filter
 -------------------------------------
@@ -10,7 +24,7 @@ X-Band waveguide filter using inductive irises.
 
 ###############################################################################
 # Perform required imports
-# ~~~~~~~~~~~~~~~~~~~~~~~~
+# ------------------------
 # Perform required imports.
 #
 
@@ -20,20 +34,14 @@ import pyaedt
 from pyaedt import general_methods
 
 ###############################################################################
-# Launch Ansys Electronics Desktop (AEDT)
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#
-
-
-###############################################################################
 # Define parameters and values for waveguide iris filter
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# l: Length of the cavity from the mid-point of one iris
+# -------------------------------------------------------
+# - *l*: Length of the cavity from the mid-point of one iris
 #    to the midpoint of the next iris.
-# w: Width of the iris opening.
-# a: Long dimension of the waveguide cross-section (X-Band)
-# b: Short dimension of the waveguide cross-section.
-# t: Metal thickness of the iris insert.
+# - *w*: Width of the iris opening.
+# - *a*: Long dimension of the waveguide cross-section (X-Band)
+# - *b*: Short dimension of the waveguide cross-section.
+# - *t*: Metal thickness of the iris insert.
 
 wgparams = {'l': [0.7428, 0.82188],
             'w': [0.50013, 0.3642, 0.3458],
@@ -46,8 +54,8 @@ non_graphical = False
 new_thread = True
 
 ###############################################################################
-# Save the project and results in the TEMP folder
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Save the project and results in a TEMP folder
+# -----------------------------------------------
 
 project_folder = os.path.join(tempfile.gettempdir(), "waveguide_example")
 if not os.path.exists(project_folder):
@@ -68,7 +76,7 @@ var_mapping = dict()  # Used by parse_expr to parse expressions.
 
 ###############################################################################
 # Initialize design parameters in HFSS.
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# -------------------------------------
 
 hfss.modeler.model_units = "in"  # Set to inches
 for key in wgparams:
@@ -92,7 +100,7 @@ else:
 
 ###############################################################################
 # Draw parametric waveguide filter
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# --------------------------------
 # Define a function to place each iris at the correct longitudinal (z) position,
 # Loop from the largest index (interior of the filter) to 1, which is the first
 # iris nearest the waveguide ports.
@@ -110,7 +118,7 @@ def place_iris(zpos, dz, n):
 
 ###############################################################################
 # Place irises
-# ~~~~~~~~~~~~
+# ------------
 # Place the irises from inner (highest integer) to outer.
 
 for count in reversed(range(1, len(wgparams['w']) + 1)):
@@ -127,7 +135,7 @@ for count in reversed(range(1, len(wgparams['w']) + 1)):
 
 ###############################################################################
 # Draw full waveguide with ports
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ------------------------------
 # Use ``hfss.variable_manager`` which acts like a dict() to return an instance of
 # the ``pyaedt.application.Variables.VariableManager`` class for any variable.
 # The ``VariableManager`` instance takes the HFSS variable name as a key.
@@ -147,7 +155,7 @@ hfss.modeler.create_box(["-b/2", "-a/2", "wg_z_start"], ["b", "a", "wg_length"],
 
 ###############################################################################
 # Draw the whole waveguide.
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ------------------------------
 # wg_z is the total length of the waveguide, including port extension.
 # Note that the ``.evaluated_value`` provides access to the numerical value of
 # ``wg_z_start`` which is an expression in HFSS.
@@ -158,7 +166,7 @@ wg_z = [wg_z_start.evaluated_value, hfss.value_with_units(wg_z_start.numeric_val
 # Assign wave ports to the end faces of the waveguid
 # and define the calibration lines to ensure self-consistent
 # polarization between wave ports.
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ------------------------------
 
 count = 0
 ports = []
@@ -171,7 +179,7 @@ for n, z in enumerate(wg_z):
 
 ###############################################################################
 # Insert the mesh adaptation setup using refinement at two frequencies.
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ---------------------------------------------------------------------
 # This approach is useful for resonant structures as the coarse initial
 # mesh impacts the resonant frequency and hence, the field propagation through the
 # filter.  Adaptation at multiple frequencies helps to ensure that energy propagates
@@ -199,7 +207,7 @@ setup.analyze(num_tasks=2)
 
 ###############################################################################
 # Generate S-Parameter Plots
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~
+# --------------------------
 #  The following commands fetch solution data from HFSS for plotting directly
 #  from the Python interpreter.
 #  Caution: The syntax for expressions must be identical to that used
@@ -213,7 +221,7 @@ plt = solution.plot(solution.expressions)  # Matplotlib axes object.
 
 ###############################################################################
 # Generate E field plot
-# ~~~~~~~~~~~~~~~~~~~~~
+# ---------------------
 #  The following command generates a field plot in HFSS and uses PyVista
 #  to plot the field in Jupyter.
 
@@ -227,7 +235,7 @@ plot=hfss.post.plot_field(quantity="Mag_E",
 
 ###############################################################################
 # Save and close the desktop
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~
+# --------------------------
 #  The following command saves the project to a file and closes the desktop.
 
 hfss.save_project()

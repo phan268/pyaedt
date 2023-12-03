@@ -10,7 +10,7 @@ laminate structures such as the patch antenna.
 
 ###########################
 # Perform  imports
-# ~~~~~~~~~~~~~~~~~~
+# ----------------
 
 import os
 
@@ -20,7 +20,7 @@ from pyaedt.modeler.advanced_cad.stackup_3d import Stackup3D
 
 ###############################################################################
 # Set non-graphical mode
-# ~~~~~~~~~~~~~~~~~~~~~~
+# ----------------------
 # Set non-graphical mode. ``"PYAEDT_NON_GRAPHICAL"`` is set to ``False``
 # to create this documentation.
 #
@@ -36,7 +36,7 @@ freq_units = "GHz"
 
 ########################################################
 # Create temporary working folder
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# -------------------------------
 # Use tempfile to create a temporary working folder. Project data
 # is deleted after this example is run.
 #
