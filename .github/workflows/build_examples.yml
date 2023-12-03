@@ -6,6 +6,12 @@ env:
   RESET_EXAMPLES_CACHE: 3
   RESET_DOC_BUILD_CACHE: 3
   RESET_AUTOSUMMARY_CACHE: 3
+  # Use the following env variables to limit which examples will be built. If these
+  # values are not set, the full examples directory will be parsed and run.
+  EXAMPLES_DIR: '02-HFSS'
+  # The following env variable may also be a regex that is used to select
+  # the example files that will be run.
+  EXAMPLE_FILE: 'Array.py'
 
 # Controls when the workflow will run
 on:

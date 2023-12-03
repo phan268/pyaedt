@@ -266,18 +266,31 @@ if os.name != "posix" and "PYAEDT_CI_NO_EXAMPLES" not in os.environ:
     # necessary for pyvista when building the sphinx gallery
     pyvista.BUILDING_GALLERY = True
 
+    examples_dir = "../../examples"
+    gallery_dir = "examples"
+    filename_pattern = r"\.py"
     if config["run_examples"]:
         extensions.append("sphinx_gallery.gen_gallery")
-
+        # The environment variable "EXAMPLES_FOLDER" can be used
+        # to limit which directories should be run to create the
+        # gallery examples.
+        if "EXAMPLES_DIR" in os.environ.keys():
+            examples_dir = os.path.join(examples_dir, os.environ["EXAMPLES_DIR"])
+            gallery_dir = os.path.join(gallery_dir, os.environ["EXAMPLES_DIR"])
+            if "EXAMPLE_FILE" in os.environ.keys():
+                filename_pattern = os.environ["EXAMPLE_FILE"]
         sphinx_gallery_conf = {
             # convert rst to md for ipynb
             "pypandoc": True,
             # path to your examples scripts
-            "examples_dirs": ["../../examples/"],
+            "examples_dirs": [examples_dir],
             # path where to save gallery generated examples
-            "gallery_dirs": ["examples"],
+            "gallery_dirs": [gallery_dir],
             # Patter to search for examples files
-            "filename_pattern": r"\.py",
+            "filename_pattern": filename_pattern,
+            # Allow py:percent format for example files to allow editing directly in a jupyter
+            # notebook using the jupytext plugin. 'doctest' is the default for *.py files.
+            "sphinx_gallery_formats": ["doctest", "py:percent"],
             # Remove the "Download all examples" button from the top level gallery
             "download_all_examples": False,
             # Sort gallery examples by file name instead of number of lines (default)
