@@ -28,7 +28,7 @@ concurrency:
 jobs:
   build_docs_no_deploy:
     # The type of runner that the job will run on
-    name: full_documentation
+    name: doc_build_test
     runs-on: [windows-latest, pyaedt]
     timeout-minutes: 480
     strategy:

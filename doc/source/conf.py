@@ -290,7 +290,7 @@ if os.name != "posix" and "PYAEDT_CI_NO_EXAMPLES" not in os.environ:
             "filename_pattern": filename_pattern,
             # Allow py:percent format for example files to allow editing directly in a jupyter
             # notebook using the jupytext plugin. 'doctest' is the default for *.py files.
-            "sphinx_gallery_formats": ["doctest", "py:percent"],
+            # "sphinx_gallery_formats": ["doctest", "py:percent"],
             # Remove the "Download all examples" button from the top level gallery
             "download_all_examples": False,
             # Sort gallery examples by file name instead of number of lines (default)
