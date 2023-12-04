@@ -17,8 +17,8 @@ env:
 on:
   # Triggers the workflow on push or pull request events but only for the main branch
   push:
-    branches:
-     - 'examples/*'
+    tags:
+      - 'build:examples'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -79,7 +79,7 @@ jobs:
         with:
           name: Documentation
           path: doc/_build/html
-          retention-days: 7
+          retention-days: 4
 
 #      - name: Upload EDB Documentation
 #        uses: actions/upload-artifact@v3
