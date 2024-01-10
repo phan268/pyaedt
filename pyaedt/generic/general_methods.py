@@ -1,13 +1,19 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+
 import ast
 import codecs
+from collections import OrderedDict
 import csv
 import datetime
 import difflib
 import fnmatch
+from functools import update_wrapper
 import inspect
 import itertools
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -16,24 +22,31 @@ import sys
 import tempfile
 import time
 import traceback
-from collections import OrderedDict
-from functools import update_wrapper
+
+from pyaedt.generic.constants import CSS4_COLORS
+from pyaedt.generic.settings import settings
 
 is_ironpython = "IronPython" in sys.version or ".NETFramework" in sys.version
+is_linux = os.name == "posix"
+is_windows = not is_linux
 _pythonver = sys.version_info[0]
-inside_desktop = True
-
-try:
-    import ScriptEnv
-
-    ScriptEnv.Initialize("Ansoft.ElectronicsDesktop")
-except:
-    inside_desktop = False
-
-is_remote_server = os.getenv("PYAEDT_IRONPYTHON_SERVER", "False").lower() in ("true", "1", "t")
+inside_desktop = True if is_ironpython and "4.0.30319.42000" in sys.version else False
 
 if not is_ironpython:
     import psutil
+
+try:
+    import xml.etree.cElementTree as ET
+
+    ET.VERSION
+except ImportError:
+    ET = None
+
+
+class GrpcApiError(Exception):
+    """ """
+
+    pass
 
 
 class MethodNotSupportedError(Exception):
@@ -49,8 +62,18 @@ def _write_mes(mes_text):
         settings.logger.error(el)
 
 
+def _get_args_dicts(func, args, kwargs):
+    if int(sys.version[0]) > 2:
+        args_name = list(OrderedDict.fromkeys(inspect.getfullargspec(func)[0] + list(kwargs.keys())))
+        args_dict = OrderedDict(list(itertools.zip_longest(args_name, args)) + list(kwargs.items()))
+    else:
+        args_name = list(OrderedDict.fromkeys(inspect.getargspec(func)[0] + list(kwargs.keys())))
+        args_dict = OrderedDict(list(itertools.izip(args_name, args)) + list(kwargs.iteritems()))
+    return args_dict
+
+
 def _exception(ex_info, func, args, kwargs, message="Type Error"):
-    """Writes the trace stack to the desktop when a python error occurs
+    """Write the trace stack to the desktop when a Python error occurs.
 
     Parameters
     ----------
@@ -69,42 +92,77 @@ def _exception(ex_info, func, args, kwargs, message="Type Error"):
     -------
 
     """
-    message_to_print = ""
-    if "oDesktop" in dir(sys.modules["__main__"]):
-        try:
-            messages = list(sys.modules["__main__"].oDesktop.GetMessages("", "", 2))
-        except:
-            messages = []
-        if messages and "[error] Script macro error" in messages[-1]:
-            message_to_print = messages[-1]
-    _write_mes("Method {} Failed:  {}. Please Check again".format(func.__name__, message))
-    _write_mes(ex_info[1])
-    if message_to_print:
-        _write_mes(message_to_print)
-    _write_mes("Arguments Provided: ")
+
+    tb_data = ex_info[2]
+    tb_trace = traceback.format_tb(tb_data)
+    _write_mes("{} on {}".format(message.upper(), func.__name__))
     try:
-        if int(sys.version[0]) > 2:
-            args_name = list(OrderedDict.fromkeys(inspect.getfullargspec(func)[0] + list(kwargs.keys())))
-            args_dict = OrderedDict(list(itertools.zip_longest(args_name, args)) + list(kwargs.items()))
-        else:
-            args_name = list(OrderedDict.fromkeys(inspect.getargspec(func)[0] + list(kwargs.keys())))
-            args_dict = OrderedDict(list(itertools.izip(args_name, args)) + list(kwargs.iteritems()))
+        _write_mes(ex_info[1].args[0])
+    except (IndexError, AttributeError):
+        pass
+    for trace in traceback.format_stack():
+        if func.__name__ in trace:
+            for el in trace.split("\n"):
+                _write_mes(el)
+    for trace in tb_trace:
+        tblist = trace.split("\n")
+        for el in tblist:
+            if func.__name__ in el:
+                _write_mes(el)
+
+    message_to_print = ""
+    messages = ""
+    try:
+        messages = list(sys.modules["__main__"].oDesktop.GetMessages("", "", 2))[-1].lower()
+    except (GrpcApiError, AttributeError, TypeError, IndexError):
+        pass
+    if "error" in messages:
+        message_to_print = messages[messages.index("[error]") :]
+    # _write_mes("{} - {} -  {}.".format(ex_info[1], func.__name__, message.upper()))
+
+    if message_to_print:
+        _write_mes("Last Electronics Desktop Message - " + message_to_print)
+
+    args_name = []
+    try:
+        args_dict = _get_args_dicts(func, args, kwargs)
+        first_time_log = True
 
         for el in args_dict:
-            if el != "self":
+            if el != "self" and args_dict[el]:
+                if first_time_log:
+                    _write_mes("Method arguments: ")
+                    first_time_log = False
                 _write_mes("    {} = {} ".format(el, args_dict[el]))
     except:
         pass
-    tb_data = ex_info[2]
-    tb_trace = traceback.format_tb(tb_data)
-    if len(tb_trace) > 1:
-        tblist = tb_trace[1].split("\n")
-    else:
-        tblist = tb_trace[0].split("\n")
-    for el in tblist:
-        if func.__name__ in el:
-            _write_mes("Error in : " + el)
-    _write_mes("Check Online documentation on: https://aedtdocs.pyansys.com/search.html?q={}".format(func.__name__))
+    args = [func.__name__] + [i for i in args_name if i not in ["self"]]
+    if not func.__name__.startswith("_"):
+        _write_mes(
+            "Check Online documentation on: https://aedt.docs.pyansys.com/version/stable/search.html?q={}".format(
+                "+".join(args)
+            )
+        )
+
+
+def normalize_path(path_in, sep=None):
+    """Normalize path separators.
+
+    Parameters
+    ----------
+    path_in : str
+        Path to normalize.
+    sep : str, optional
+        Separator.
+
+    Returns
+    -------
+    str
+        Path normalized to new separator.
+    """
+    if sep is None:
+        sep = os.sep
+    return path_in.replace("\\", sep).replace("/", sep)
 
 
 def _check_types(arg):
@@ -119,212 +177,20 @@ def _check_types(arg):
     return ""
 
 
-def check_and_download_file(local_path, remote_path, overwrite=True):
-    """Check if a folder is remote and download it or simply return the path.
-
-    Parameters
-    ----------
-    local_path : str
-        Local path where to save the folder.
-    remote_path : str
-        Folder original path.
-    overwrite : bool
-        Either if overwrite or not files.
-
-    Returns
-    -------
-    str
-    """
-    if settings.remote_rpc_session:
-        remote_path = remote_path.replace("\\", "/") if remote_path[0] != "\\" else remote_path
-        settings.remote_rpc_session.filemanager.download_file(remote_path, local_path, overwrite=overwrite)
-        return local_path
-    return remote_path
-
-
-def check_and_download_folder(local_path, remote_path, overwrite=True):
-    """Check if a file is remote and download it or simply return the path.
-
-    Parameters
-    ----------
-    local_path : str
-        Local path where to save the file.
-    remote_path : str
-        File original path.
-    overwrite : bool
-        Either if overwrite or not files.
-
-    Returns
-    -------
-    str
-    """
-    if settings.remote_rpc_session:
-        remote_path = remote_path.replace("\\", "/") if remote_path[0] != "\\" else remote_path
-        settings.remote_rpc_session.filemanager.download_folder(remote_path, local_path, overwrite=overwrite)
-        return local_path
-    return remote_path
-
-
-def open_file(file_path, file_options="r"):
-    """Open a file and return the object either if local or remote.
-
-    Parameters
-    ----------
-    file_path : str
-        Full absolute path to the file (either local or remote.
-    file_options : str, optional
-        Open options
-
-    Returns
-    -------
-    object
-        Opened file
-    """
-    file_path = file_path.replace("\\", "/") if file_path[0] != "\\" else file_path
-    dir_name = os.path.dirname(file_path)
-    if os.path.exists(dir_name):
-        return open(file_path, file_options)
-    elif settings.remote_rpc_session:
-        return settings.remote_rpc_session.open_file(file_path, file_options)
-    else:
-        return False
-
-
-def convert_remote_object(arg):
-    """Convert Remote list or dict to native list and dictionary.
-
-    .. note::
-        This is needed only on Cpython to Ironpython Connection.
-
-    Parameters
-    ----------
-    arg : dict or list
-        Object to convert
-    Returns
-    -------
-    dict or list
-    """
-    if _check_types(arg) == "list":
-        if arg.__len__() > 0:
-            if (
-                isinstance(arg[0], (int, float, str))
-                or _check_types(arg[0]) == "list"
-                or _check_types(arg[0]) == "dict"
-            ):
-                a = list(ast.literal_eval(str(arg)))
-                for i, el in enumerate(a):
-                    a[i] = convert_remote_object(el)
-                return a
-            else:
-                return [arg[i] for i in range(arg.__len__())]
-        else:
-            return []
-    elif _check_types(arg) == "dict":
-        a = dict(ast.literal_eval(str(arg)))
-        for k, v in a.items():
-            a[k] = convert_remote_object(v)
-        return a
-    return arg
-
-
-def _remote_list_conversion(args):
-    new_args = []
-    if args:
-        for arg in args:
-            new_args.append(convert_remote_object(arg))
-    return new_args
-
-
-def _remote_dict_conversion(args):
-    if args:
-        new_kwargs = {}
-        for arg in args:
-            new_kwargs[arg] = convert_remote_object(args[arg])
-    else:
-        new_kwargs = args
-    return new_kwargs
-
-
-def _log_method(func, new_args, new_kwargs):
-    if not settings.enable_debug_internal_methods_logger and str(func.__name__)[0] == "_":
-        return
-    if not settings.enable_debug_geometry_operator_logger and "GeometryOperators" in str(func):
-        return
-    if (
-        not settings.enable_debug_edb_logger
-        and "Edb" in str(func) + str(new_args)
-        or "edb_core" in str(func) + str(new_args)
-    ):
-        return
-    line_begin = "    Implicit Arguments: "
-    line_begin2 = "    Explicit Arguments: "
-    message = []
-    if new_args:
-        object_name = str([new_args[0]])[1:-1]
-        id = object_name.find(" object at ")
-        if id >= 0:
-            object_name = object_name[1:id]
-            message.append(" '{}' has been exectuted.".format(object_name + "." + str(func.__name__)))
-            if new_args[1:]:
-                message.append(line_begin + str(new_args[1:])[1:-1])
-            if new_kwargs:
-                message.append(line_begin2 + str(new_kwargs)[1:-1])
-
-        else:
-            message.append(" '{}' has been exectuted.".format(str(func.__name__)))
-            if new_args[1:]:
-                message.append(line_begin + str(new_args[1:])[1:-1])
-            if new_kwargs:
-                message.append(line_begin2 + str(new_kwargs)[1:-1])
-
-    else:
-        message.append(" '{}' has been exectuted".format(str(func.__name__)))
-        if new_kwargs:
-            message.append(line_begin2 + str(new_kwargs)[1:-1])
-    for m in message:
-        settings.logger.debug(m)
-
-
-def pyaedt_function_handler(direct_func=None):
-    """Decorator for pyaedt Exception, Logging, and Conversion management.
-    Provides an exception handler, a logging mechanism and an argument conversion for clien-server
-    communications.
-
-    It returns the function itself if correctly executed otherwise it will return False and errors
-    will be displayed.
-
-    """
-
-    if callable(direct_func):
-        user_function = direct_func
-        wrapper = _function_handler_wrapper(user_function)
-        return update_wrapper(wrapper, user_function)
-    elif direct_func is not None:
-        raise TypeError("Expected first argument to be a callable, or None")
-
-    def decorating_function(user_function):
-        wrapper = _function_handler_wrapper(user_function)
-        return update_wrapper(wrapper, user_function)
-
-    return decorating_function
-
-
 def _function_handler_wrapper(user_function):
     def wrapper(*args, **kwargs):
-        if is_remote_server:
-            converted_args = _remote_list_conversion(args)
-            converted_kwargs = _remote_dict_conversion(kwargs)
-            args = converted_args
-            kwargs = converted_kwargs
-        if settings.enable_debug_logger:
-            _log_method(user_function, args, kwargs)
-        if settings.enable_error_handler:
+        if not settings.enable_error_handler:
+            result = user_function(*args, **kwargs)
+            return result
+        else:
             try:
+                settings.time_tick = time.time()
                 out = user_function(*args, **kwargs)
+                if settings.enable_debug_logger or settings.enable_debug_edb_logger:
+                    _log_method(user_function, args, kwargs)
                 return out
             except TypeError:
-                if not is_remote_server:
-                    _exception(sys.exc_info(), user_function, args, kwargs, "Type Error")
+                _exception(sys.exc_info(), user_function, args, kwargs, "Type Error")
                 return False
             except ValueError:
                 _exception(sys.exc_info(), user_function, args, kwargs, "Value Error")
@@ -336,9 +202,8 @@ def _function_handler_wrapper(user_function):
                 _exception(sys.exc_info(), user_function, args, kwargs, "Key Error")
                 return False
             except IndexError:
-                if not is_remote_server:
-                    _exception(sys.exc_info(), user_function, args, kwargs, "Index Error")
-                    return False
+                _exception(sys.exc_info(), user_function, args, kwargs, "Index Error")
+                return False
             except AssertionError:
                 _exception(sys.exc_info(), user_function, args, kwargs, "Assertion Error")
                 return False
@@ -358,14 +223,204 @@ def _function_handler_wrapper(user_function):
                 if settings.enable_file_logs:
                     settings.logger.error(message)
                 return False
+            except GrpcApiError:
+                _exception(sys.exc_info(), user_function, args, kwargs, "AEDT grpc API call Error")
+                return False
             except BaseException:
                 _exception(sys.exc_info(), user_function, args, kwargs, "General or AEDT Error")
                 return False
 
-        result = user_function(*args, **kwargs)
-        return result
-
     return wrapper
+
+
+def pyaedt_function_handler(direct_func=None):
+    """Provides an exception handler, logging mechanism, and argument converter for client-server
+    communications.
+
+    This method returns the function itself if correctly executed. Otherwise, it returns ``False``
+    and displays errors.
+
+    """
+    if callable(direct_func):
+        user_function = direct_func
+        wrapper = _function_handler_wrapper(user_function)
+        return update_wrapper(wrapper, user_function)
+    elif direct_func is not None:
+        raise TypeError("Expected first argument to be a callable, or None")
+
+    def decorating_function(user_function):
+        wrapper = _function_handler_wrapper(user_function)
+        return update_wrapper(wrapper, user_function)
+
+    return decorating_function
+
+
+@pyaedt_function_handler()
+def check_numeric_equivalence(a, b, relative_tolerance=1e-7):
+    """Check if two numeric values are equivalent to within a relative tolerance.
+
+    Paraemters
+    ----------
+    a : int, float
+        Reference value to compare to.
+    b : int, float
+        Secondary value for the comparison.
+    relative_tolerance : float, optional
+        Relative tolerance for the equivalence test. The difference is relative to the first value.
+        The default is ``1E-7``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the two passed values are equivalent.
+    """
+    if abs(a) > 0.0:
+        reldiff = abs(a - b) / a
+    else:
+        reldiff = abs(b)
+    return True if reldiff < relative_tolerance else False
+
+
+@pyaedt_function_handler()
+def check_and_download_file(local_path, remote_path, overwrite=True):
+    """Check if a file is remote and either download it or return the path.
+
+    Parameters
+    ----------
+    local_path : str
+        Local path to save the file to.
+    remote_path : str
+        Path to the remote file.
+    overwrite : bool, optional
+        Whether to overwrite the file if it already exits locally.
+        The default is ``True``.
+
+    Returns
+    -------
+    str
+    """
+    if settings.remote_rpc_session:
+        remote_path = remote_path.replace("\\", "/") if remote_path[0] != "\\" else remote_path
+        settings.remote_rpc_session.filemanager.download_file(remote_path, local_path, overwrite=overwrite)
+        return local_path
+    return remote_path
+
+
+def check_if_path_exists(path):
+    """Check whether a path exists or not local or remote machine (for remote sessions only).
+
+    Parameters
+    ----------
+    path : str
+        Local or remote path to check.
+
+    Returns
+    -------
+    bool
+    """
+    if settings.remote_rpc_session:
+        return settings.remote_rpc_session.filemanager.pathexists(path)
+    return os.path.exists(path)
+
+
+@pyaedt_function_handler()
+def check_and_download_folder(local_path, remote_path, overwrite=True):
+    """Check if a folder is remote and either download it or return the path.
+
+    Parameters
+    ----------
+    local_path : str
+        Local path to save the folder to.
+    remote_path : str
+        Path to the remote folder.
+    overwrite : bool, optional
+        Whether to overwrite the folder if it already exits locally.
+        The default is ``True``.
+
+    Returns
+    -------
+    str
+    """
+    if settings.remote_rpc_session:
+        remote_path = remote_path.replace("\\", "/") if remote_path[0] != "\\" else remote_path
+        settings.remote_rpc_session.filemanager.download_folder(remote_path, local_path, overwrite=overwrite)
+        return local_path
+    return remote_path
+
+
+def open_file(file_path, file_options="r"):
+    """Open a file and return the object.
+
+    Parameters
+    ----------
+    file_path : str
+        Full absolute path to the file (either local or remote).
+    file_options : str, optional
+        Options for opening the file.
+
+    Returns
+    -------
+    object
+        Opened file.
+    """
+    file_path = file_path.replace("\\", "/") if file_path[0] != "\\" else file_path
+    dir_name = os.path.dirname(file_path)
+    if "r" in file_options:
+        if os.path.exists(file_path):
+            return open(file_path, file_options)
+        elif settings.remote_rpc_session and settings.remote_rpc_session.filemanager.pathexists(
+            file_path
+        ):  # pragma: no cover
+            local_file = os.path.join(tempfile.gettempdir(), os.path.split(file_path)[-1])
+            settings.remote_rpc_session.filemanager.download_file(file_path, local_file)
+            return open(local_file, file_options)
+    elif os.path.exists(dir_name):
+        return open(file_path, file_options)
+    else:
+        settings.logger.error("The file or folder %s does not exist", dir_name)
+
+
+def _log_method(func, new_args, new_kwargs):
+    if not settings.enable_debug_internal_methods_logger and str(func.__name__)[0] == "_":
+        return
+    if not settings.enable_debug_geometry_operator_logger and "GeometryOperators" in str(func):
+        return
+    if (
+        not settings.enable_debug_edb_logger
+        and "Edb" in str(func) + str(new_args)
+        or "edb_core" in str(func) + str(new_args)
+    ):
+        return
+    line_begin = "ARGUMENTS: "
+    message = []
+    delta = time.time() - settings.time_tick
+    m, s = divmod(delta, 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    msec = (s - int(s)) * 1000
+    if d > 0:
+        time_msg = " {}days {}h {}m {}sec.".format(d, h, m, int(s))
+    elif h > 0:
+        time_msg = " {}h {}m {}sec.".format(h, m, int(s))
+    else:
+        time_msg = "  {}m {}sec {}msec.".format(m, int(s), int(msec))
+    if settings.enable_debug_methods_argument_logger:
+        args_dict = _get_args_dicts(func, new_args, new_kwargs)
+        id = 0
+        if new_args:
+            object_name = str([new_args[0]])[1:-1]
+            id = object_name.find(" object at ")
+        if id > 0:
+            object_name = object_name[1:id]
+            message.append("'{}' was run in {}".format(object_name + "." + str(func.__name__), time_msg))
+        else:
+            message.append("'{}' was run in {}".format(str(func.__name__), time_msg))
+        message.append(line_begin)
+        for k, v in args_dict.items():
+            if k != "self":
+                message.append("    {} = {}".format(k, v))
+    for m in message:
+        settings.logger.debug(m)
 
 
 @pyaedt_function_handler()
@@ -381,16 +436,36 @@ def get_version_and_release(input_version):
 
 
 @pyaedt_function_handler()
+def get_string_version(input_version):
+    output_version = input_version
+    if isinstance(input_version, float):
+        output_version = str(input_version)
+        if len(output_version) == 4:
+            output_version = "20" + output_version
+    elif isinstance(input_version, int):
+        output_version = str(input_version)
+        output_version = "20{}.{}".format(output_version[:2], output_version[-1])
+    elif isinstance(input_version, str):
+        if len(input_version) == 3:
+            output_version = "20{}.{}".format(input_version[:2], input_version[-1])
+        elif len(input_version) == 4:
+            output_version = "20" + input_version
+    return output_version
+
+
+@pyaedt_function_handler()
 def env_path(input_version):
-    """Return the version Environment Variable name based on an input version string.
+    """Get the path of the version environment variable for an AEDT version.
 
     Parameters
     ----------
     input_version : str
+        AEDT version.
 
     Returns
     -------
     str
+        Path for the version environment variable.
 
     Examples
     --------
@@ -407,20 +482,22 @@ def env_path(input_version):
 
 @pyaedt_function_handler()
 def env_value(input_version):
-    """Return the version Environment Variable value based on an input version string.
+    """Get the name of the version environment variable for an AEDT version.
 
     Parameters
     ----------
     input_version : str
+        AEDT version.
 
     Returns
     -------
     str
+        Name for the version environment variable.
 
     Examples
     --------
     >>> env_value("2021.2")
-    "ANSYSEM_ROOT211"
+    "ANSYSEM_ROOT212"
     """
     return "ANSYSEM_ROOT{0}{1}".format(
         get_version_and_release(input_version)[0], get_version_and_release(input_version)[1]
@@ -429,15 +506,17 @@ def env_value(input_version):
 
 @pyaedt_function_handler()
 def env_path_student(input_version):
-    """Return the Student version Environment Variable value based on an input version string.
+    """Get the path of the version environment variable for an AEDT student version.
 
     Parameters
     ----------
     input_version : str
+       AEDT student version.
 
     Returns
     -------
     str
+        Path for the student version environment variable.
 
     Examples
     --------
@@ -454,20 +533,22 @@ def env_path_student(input_version):
 
 @pyaedt_function_handler()
 def env_value_student(input_version):
-    """Return the Student version Environment Variable name based on an input version string.
+    """Get the name of the version environment variable for an AEDT student version.
 
     Parameters
     ----------
     input_version : str
+        AEDT student version.
 
     Returns
     -------
     str
+         Name for the student version environment variable.
 
     Examples
     --------
     >>> env_value_student("2021.2")
-    "ANSYSEMSV_ROOT211"
+    "ANSYSEMSV_ROOT212"
     """
     return "ANSYSEMSV_ROOT{0}{1}".format(
         get_version_and_release(input_version)[0], get_version_and_release(input_version)[1]
@@ -480,12 +561,14 @@ def get_filename_without_extension(path):
 
     Parameters
     ----------
-    path :
+    path : str
+        Path for the file.
 
 
     Returns
     -------
     str
+       Name for the file, excluding its extension.
 
     """
     return os.path.splitext(os.path.split(path)[1])[0]
@@ -493,19 +576,21 @@ def get_filename_without_extension(path):
 
 @pyaedt_function_handler()
 def generate_unique_name(rootname, suffix="", n=6):
-    """Generate a new  name given a rootname and optionally a suffix.
+    """Generate a new name given a root name and optional suffix.
 
     Parameters
     ----------
-    rootname :
-        Root name to which add 6 Random chars
-    suffix :
-        Suffix to be added (Default value = '')
-    n :
-        Number of random characters in the name. The default value is 6.
+    rootname : string
+        Root name to add random characters to.
+    suffix : string, optional
+        Suffix to add. The default is ``''``.
+    n : int, optional
+        Number of random characters to add to the name. The default value is ``6``.
 
     Returns
     -------
+    str
+        Newly generated name.
 
     """
     char_set = string.ascii_uppercase + string.digits
@@ -518,25 +603,30 @@ def generate_unique_name(rootname, suffix="", n=6):
 
 @pyaedt_function_handler()
 def generate_unique_folder_name(rootname=None, folder_name=None):
-    """Generate a new aedt folder name given a rootname.
+    """Generate a new AEDT folder name given a rootname.
 
     Parameters
     ----------
     rootname : str, optional
-        Root name where to create the new folder.
+        Root name for the new folder. The default is ``None``.
     folder_name : str, optional
-        Either if the new folder has to be created or not.
+        Name for the new AEDT folder if one must be created.
 
     Returns
     -------
     str
     """
     if not rootname:
-        rootname = tempfile.gettempdir()
+        if settings.remote_rpc_session:
+            rootname = settings.remote_rpc_session_temp_folder
+        else:
+            rootname = tempfile.gettempdir()
     if folder_name is None:
         folder_name = generate_unique_name("pyaedt_prj", n=3)
     temp_folder = os.path.join(rootname, folder_name)
-    if not os.path.exists(temp_folder):
+    if settings.remote_rpc_session and not settings.remote_rpc_session.filemanager.pathexists(temp_folder):
+        settings.remote_rpc_session.filemanager.makedirs(temp_folder)
+    elif not os.path.exists(temp_folder):
         os.makedirs(temp_folder)
 
     return temp_folder
@@ -544,20 +634,20 @@ def generate_unique_folder_name(rootname=None, folder_name=None):
 
 @pyaedt_function_handler()
 def generate_unique_project_name(rootname=None, folder_name=None, project_name=None, project_format="aedt"):
-    """Generate a new aedt project name given a rootname.
+    """Generate a new AEDT project name given a rootname.
 
     Parameters
     ----------
     rootname : str, optional
-        Root name where the new folder will be created.
+        Root name where the new project is to be created.
     folder_name : str, optional
-        Name of the folder to be created. Default is None which creates a random port.
-        Use "" to not create a subfolder.
-    project_format : str, optional
-        Project format. Default is aedt. Option is aedb.
+        Name of the folder to create. The default is ``None``, in which case a random folder
+        is created. Use ``""`` if you do not want to create a subfolder.
     project_name : str, optional
-        Name of the project. If None, random project will be created.
-        If project exists, then a new suffix will be added.
+        Name for the project. The default is ``None``, in which case a random project is
+        created. If a project with this name already exists, a new suffix is added.
+    project_format : str, optional
+        Project format. The default is ``"aedt"``. Options are ``"aedt"`` and ``"aedb"``.
 
     Returns
     -------
@@ -568,7 +658,7 @@ def generate_unique_project_name(rootname=None, folder_name=None, project_name=N
     name_with_ext = project_name + "." + project_format
     folder_path = generate_unique_folder_name(rootname, folder_name=folder_name)
     prj = os.path.join(folder_path, name_with_ext)
-    if os.path.exists(prj):
+    if check_if_path_exists(prj):
         name_with_ext = generate_unique_name(project_name, n=3) + "." + project_format
         prj = os.path.join(folder_path, name_with_ext)
     return prj
@@ -579,7 +669,7 @@ def _retry_ntimes(n, function, *args, **kwargs):
 
     Parameters
     ----------
-    n :
+    n : int
 
     function :
 
@@ -592,25 +682,36 @@ def _retry_ntimes(n, function, *args, **kwargs):
     -------
 
     """
+    func_name = None
+    if function.__name__ == "InvokeAedtObjMethod":
+        func_name = args[1]
     retry = 0
     ret_val = None
+    inclusion_list = [
+        "CreateVia",
+        "PasteDesign",
+        "Paste",
+        "PushExcitations",
+        "Rename",
+        "RestoreProjectArchive",
+        "ImportGerber",
+    ]
+    # if func_name and func_name not in inclusion_list and not func_name.startswith("Get"):
+    if func_name and func_name not in inclusion_list:
+        n = 1
     while retry < n:
         try:
             ret_val = function(*args, **kwargs)
-            if not ret_val and type(ret_val) is not float and type(ret_val) is not int:
-                ret_val = True
         except:
             retry += 1
-            time.sleep(0.1)
+            time.sleep(settings.retry_n_times_time_interval)
         else:
-            break
+            return ret_val
     if retry == n:
         if "__name__" in dir(function):
             raise AttributeError("Error in Executing Method {}.".format(function.__name__))
         else:
             raise AttributeError("Error in Executing Method.")
-
-    return ret_val
 
 
 def time_fn(fn, *args, **kwargs):
@@ -653,35 +754,37 @@ def is_array(a):
 
 
 def is_project_locked(project_path):
-    """Checks if an aedt project lock file exists.
+    """Check if an AEDT project lock file exists.
 
     Parameters
     ----------
     project_path : str
-        Aedt project path.
+        Path for the AEDT project.
 
     Returns
     -------
     bool
+        ``True`` when successful, ``False`` when failed.
     """
-    return os.path.exists(project_path[:-4] + "lock")
+    return check_if_path_exists(project_path + ".lock")
 
 
 @pyaedt_function_handler()
 def remove_project_lock(project_path):
-    """Checks if an aedt project exists and try to remove the lock file.
+    """Check if an AEDT project exists and try to remove the lock file.
 
     .. note::
-       This operation is risky because the file could be opened in another Desktop instance.
+       This operation is risky because the file could be opened in another AEDT instance.
 
     Parameters
     ----------
     project_path : str
-        Aedt project path.
+        Path for the AEDT project.
 
     Returns
     -------
     bool
+        ``True`` when successful, ``False`` when failed.
     """
     if os.path.exists(project_path + ".lock"):
         os.remove(project_path + ".lock")
@@ -695,9 +798,9 @@ def read_csv(filename, encoding="utf-8"):
     Parameters
     ----------
     filename : str
-            Full path and name for the csv file.
+            Full path and name for the CSV file.
     encoding : str, optional
-            File encoding to be provided for csv. The default is ``utf-8``.
+            File encoding for the CSV file. The default is ``"utf-8"``.
 
     Returns
     -------
@@ -714,13 +817,38 @@ def read_csv(filename, encoding="utf-8"):
 
 
 @pyaedt_function_handler()
+def read_csv_pandas(filename, encoding="utf-8"):
+    """Read information from a CSV file and return a list.
+
+    Parameters
+    ----------
+    filename : str
+            Full path and name for the CSV file.
+    encoding : str, optional
+            File encoding for the CSV file. The default is ``"utf-8"``.
+
+    Returns
+    -------
+    :class:`pandas.DataFrame`
+
+    """
+    try:
+        import pandas as pd
+
+        return pd.read_csv(filename, encoding=encoding, header=0, na_values=".")
+    except ImportError:
+        logging.error("Pandas is not available. Install it.")
+        return None
+
+
+@pyaedt_function_handler()
 def read_tab(filename):
     """Read information from a TAB file and return a list.
 
     Parameters
     ----------
     filename : str
-            Full path and name for the tab file.
+            Full path and name for the TAB file.
 
     Returns
     -------
@@ -734,12 +862,12 @@ def read_tab(filename):
 
 @pyaedt_function_handler()
 def read_xlsx(filename):
-    """Read information from a XLSX file and return a list.
+    """Read information from an XLSX file and return a list.
 
     Parameters
     ----------
     filename : str
-            Full path and name for the xlsx file.
+            Full path and name for the XLSX file.
 
     Returns
     -------
@@ -751,7 +879,7 @@ def read_xlsx(filename):
 
         lines = pd.read_excel(filename)
         return lines
-    except:
+    except ImportError:
         lines = []
         return lines
 
@@ -771,7 +899,7 @@ def write_csv(output, list_data, delimiter=",", quotechar="|", quoting=csv.QUOTE
 
 @pyaedt_function_handler()
 def filter_tuple(value, search_key1, search_key2):
-    """Filter a tuple of 2 elements with two search keywords"""
+    """Filter a tuple of two elements with two search keywords."""
     ignore_case = True
 
     def _create_pattern(k1, k2):
@@ -817,33 +945,42 @@ def filter_string(value, search_key1):
 
 @pyaedt_function_handler()
 def recursive_glob(startpath, filepattern):
-    """Return a list of files matching a pattern, searching recursively from a start path.
+    """Get a list of files matching a pattern, searching recursively from a start path.
 
     Keyword Arguments:
     startpath -- starting path (directory)
     filepattern -- fnmatch-style filename pattern
     """
-    return [
-        os.path.join(dirpath, filename)
-        for dirpath, _, filenames in os.walk(startpath)
-        for filename in filenames
-        if fnmatch.fnmatch(filename, filepattern)
-    ]
+    if settings.remote_rpc_session:
+        files = []
+        for i in settings.remote_rpc_session.filemanager.listdir(startpath):
+            if settings.remote_rpc_session.filemanager.isdir(os.path.join(startpath, i)):
+                files.extend(recursive_glob(os.path.join(startpath, i), filepattern))
+            elif fnmatch.fnmatch(i, filepattern):
+                files.append(os.path.join(startpath, i))
+        return files
+    else:
+        return [
+            os.path.join(dirpath, filename)
+            for dirpath, _, filenames in os.walk(startpath)
+            for filename in filenames
+            if fnmatch.fnmatch(filename, filepattern)
+        ]
 
 
 @pyaedt_function_handler()
 def number_aware_string_key(s):
-    """Return a key for sorting strings that treats embedded digit sequences as integers.
+    """Get a key for sorting strings that treats embedded digit sequences as integers.
 
     Parameters
     ----------
     s : str
-        String from which to calculate key
+        String to calculate the key from.
 
     Returns
     -------
     tuple
-        Tuple of key entries
+        Tuple of key entries.
     """
 
     def is_digit(c):
@@ -871,6 +1008,8 @@ def number_aware_string_key(s):
 
 @pyaedt_function_handler()
 def _create_json_file(json_dict, full_json_path):
+    if not os.path.exists(os.path.dirname(full_json_path)):
+        os.makedirs(os.path.dirname(full_json_path))
     if not is_ironpython:
         with open(full_json_path, "w") as fp:
             json.dump(json_dict, fp, indent=4)
@@ -888,44 +1027,503 @@ def _create_json_file(json_dict, full_json_path):
     return True
 
 
+# @pyaedt_function_handler()
+# def com_active_sessions(version=None, student_version=False, non_graphical=False):
+#     """Get information for the active COM AEDT sessions.
+#
+#     Parameters
+#     ----------
+#     version : str, optional
+#         Version to check. The default is ``None``, in which case all versions are checked.
+#         When specifying a version, you can use a three-digit format like ``"222"`` or a
+#         five-digit format like ``"2022.2"``.
+#     student_version : bool, optional
+#         Whether to check for student version sessions. The default is ``False``.
+#     non_graphical : bool, optional
+#         Whether to check only for active non-graphical sessions. The default is ``False``.
+#
+#     Returns
+#     -------
+#     list
+#         List of AEDT PIDs.
+#     """
+#     if student_version:
+#         keys = ["ansysedtsv.exe"]
+#     else:
+#         keys = ["ansysedt.exe"]
+#     long_version = None
+#     if len(version) > 6:
+#         version = version[-6:]
+#     if version and "." in version:
+#         long_version = version
+#         version = version[-4:].replace(".", "")
+#     if version < "221":
+#         version = version[:2] + "." + version[2]
+#         long_version = "20{}".format(version)
+#     sessions = []
+#     for p in psutil.process_iter():
+#         try:
+#             if p.name() in keys:
+#                 if long_version and _check_installed_version(os.path.dirname(p.exe()), long_version):
+#                     sessions.append(p.pid)
+#                     continue
+#                 cmd = p.cmdline()
+#                 if non_graphical and "-ng" in cmd or not non_graphical:
+#                     if not version or (version and version in cmd[0]):
+#                         sessions.append(p.pid)
+#         except:
+#             pass
+#     return sessions
+#
+#
+# @pyaedt_function_handler()
+# def grpc_active_sessions(version=None, student_version=False, non_graphical=False):
+#     """Get information for the active gRPC AEDT sessions.
+#
+#     Parameters
+#     ----------
+#     version : str, optional
+#         Version to check. The default is ``None``, in which case all versions are checked.
+#         When specifying a version, you can use a three-digit format like ``"222"`` or a
+#         five-digit format like ``"2022.2"``.
+#     student_version : bool, optional
+#         Whether to check for student version sessions. The default is ``False``.
+#     non_graphical : bool, optional
+#         Whether to check only for active non-graphical sessions. The default is ``False``.
+#
+#     Returns
+#     -------
+#     list
+#         List of gRPC ports.
+#     """
+#     if student_version:
+#         keys = ["ansysedtsv.exe", "ansysedtsv"]
+#     else:
+#         keys = ["ansysedt.exe", "ansysedt"]
+#     if version and "." in version:
+#         version = version[-4:].replace(".", "")
+#     sessions = []
+#     for p in psutil.process_iter():
+#         try:
+#             if p.name() in keys:
+#                 cmd = p.cmdline()
+#                 if "-grpcsrv" in cmd:
+#                     if non_graphical and "-ng" in cmd or not non_graphical:
+#                         if not version or (version and version in cmd[0]):
+#                             try:
+#                                 sessions.append(
+#                                     int(cmd[cmd.index("-grpcsrv") + 1]),
+#                                 )
+#                             except (IndexError, ValueError):
+#                                 # default desktop grpc port.
+#                                 sessions.append(50051)
+#         except:
+#             pass
+#     return sessions
+#
+#
+# def active_sessions(version=None, student_version=False, non_graphical=False):
+#     """Get information for the active AEDT sessions.
+#
+#     Parameters
+#     ----------
+#     version : str, optional
+#         Version to check. The default is ``None``, in which case all versions are checked.
+#         When specifying a version, you can use a three-digit format like ``"222"`` or a
+#         five-digit format like ``"2022.2"``.
+#     student_version : bool, optional
+#     non_graphical : bool, optional
+#
+#
+#     Returns
+#     -------
+#     list
+#         List of tuple (AEDT PIDs, port).
+#     """
+#     if student_version:
+#         keys = ["ansysedtsv.exe", "ansysedtsv"]
+#     else:
+#         keys = ["ansysedt.exe", "ansysedt"]
+#     if version and "." in version:
+#         version = version[-4:].replace(".", "")
+#     if version and version < "222":
+#         version = version[:2] + "." + version[2]
+#     sessions = []
+#     for p in psutil.process_iter():
+#         try:
+#             if p.name() in keys:
+#                 cmd = p.cmdline()
+#                 if non_graphical and "-ng" in cmd or not non_graphical:
+#                     if not version or (version and version in cmd[0]):
+#                         if "-grpcsrv" in cmd:
+#                             if not version or (version and version in cmd[0]):
+#                                 try:
+#                                     sessions.append(
+#                                         [
+#                                             p.pid,
+#                                             int(cmd[cmd.index("-grpcsrv") + 1]),
+#                                         ]
+#                                     )
+#                                 except (IndexError, ValueError):
+#                                     # default desktop grpc port.
+#                                     sessions.append(
+#                                         [
+#                                             p.pid,
+#                                             50051,
+#                                         ]
+#                                     )
+#                         else:
+#                             sessions.append(
+#                                 [
+#                                     p.pid,
+#                                     -1,
+#                                 ]
+#                             )
+#         except:
+#             pass
+#     return sessions
+
+
 @pyaedt_function_handler()
-def grpc_active_sessions(version=None, student_version=False, non_graphical=False):
-    """Return the active grpc aedt session inf.
+def active_sessions(version=None, student_version=False, non_graphical=False):
+    """Get information for the active AEDT sessions.
 
     Parameters
     ----------
     version : str, optional
-        String of the version to check. By default checks on every version. Options are "222" or "2022.2".
+        Version to check. The default is ``None``, in which case all versions are checked.
+        When specifying a version, you can use a three-digit format like ``"222"`` or a
+        five-digit format like ``"2022.2"``.
     student_version : bool, optional
-        Either if check for student version session or not.
     non_graphical : bool, optional
-        Either to check for active graphical or non graphical sessions.
+
 
     Returns
     -------
-    list
-        List of grpc port.
+    dict
+        {AEDT PID: port}
+        If the PID corresponds to a COM session port is set to -1
     """
+    return_dict = {}
     if student_version:
-        keys = ["ansysedtsv.exe"]
+        keys = ["ansysedtsv.exe", "ansysedtsv"]
     else:
-        keys = ["ansysedt.exe"]
+        keys = ["ansysedt.exe", "ansysedt"]
     if version and "." in version:
         version = version[-4:].replace(".", "")
-    sessions = []
+    if version and version < "221":
+        version = version[:2] + "." + version[2]
     for p in psutil.process_iter():
         try:
             if p.name() in keys:
                 cmd = p.cmdline()
-                if "-grpcsrv" in cmd:
-                    if non_graphical and "-ng" in cmd or not non_graphical:
-                        if not version or (version and version in cmd[0]):
-                            sessions.append(
-                                int(cmd[cmd.index("-grpcsrv") + 1]),
-                            )
+                if non_graphical and "-ng" in cmd or not non_graphical:
+                    if not version or (version and version in cmd[0]):
+                        if "-grpcsrv" in cmd:
+                            if not version or (version and version in cmd[0]):
+                                try:
+                                    return_dict[p.pid] = int(cmd[cmd.index("-grpcsrv") + 1])
+                                except (IndexError, ValueError):
+                                    # default desktop grpc port.
+                                    return_dict[p.pid] = 50051
+                        else:
+                            return_dict[p.pid] = -1
+                            for i in psutil.net_connections():
+                                if i.pid == p.pid and (i.laddr.port > 50050 and i.laddr.port < 50200):
+                                    return_dict[p.pid] = i.laddr.port
+                                    break
         except:
             pass
-    return sessions
+    return return_dict
+
+
+@pyaedt_function_handler()
+def com_active_sessions(version=None, student_version=False, non_graphical=False):
+    """Get information for the active COM AEDT sessions.
+
+    Parameters
+    ----------
+    version : str, optional
+        Version to check. The default is ``None``, in which case all versions are checked.
+        When specifying a version, you can use a three-digit format like ``"222"`` or a
+        five-digit format like ``"2022.2"``.
+    student_version : bool, optional
+        Whether to check for student version sessions. The default is ``False``.
+    non_graphical : bool, optional
+        Whether to check only for active non-graphical sessions. The default is ``False``.
+
+    Returns
+    -------
+    List
+        List of AEDT process IDs.
+    """
+
+    all_sessions = active_sessions(version, student_version, non_graphical)
+
+    return_list = []
+    for s, p in all_sessions.items():
+        if p == -1:
+            return_list.append(s)
+    return return_list
+
+
+@pyaedt_function_handler()
+def grpc_active_sessions(version=None, student_version=False, non_graphical=False):
+    """Get information for the active gRPC AEDT sessions.
+
+    Parameters
+    ----------
+    version : str, optional
+        Version to check. The default is ``None``, in which case all versions are checked.
+        When specifying a version, you can use a three-digit format like ``"222"`` or a
+        five-digit format like ``"2022.2"``.
+    student_version : bool, optional
+        Whether to check for student version sessions. The default is ``False``.
+    non_graphical : bool, optional
+        Whether to check only for active non-graphical sessions. The default is ``False``.
+
+    Returns
+    -------
+    List
+        List of gRPC ports.
+    """
+    all_sessions = active_sessions(version, student_version, non_graphical)
+
+    return_list = []
+    for _, p in all_sessions.items():
+        if p > -1:
+            return_list.append(p)
+    return return_list
+
+
+@pyaedt_function_handler()
+def compute_fft(time_vals, value):  # pragma: no cover
+    """Compute FFT of input transient data.
+
+    Parameters
+    ----------
+    time_vals : `pandas.Series`
+    value : `pandas.Series`
+
+    Returns
+    -------
+    tuple
+        Frequency and Values.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        logging.error("NumPy is not available. Install it.")
+        return False
+
+    deltaT = time_vals[-1] - time_vals[0]
+    num_points = len(time_vals)
+    valueFFT = np.fft.fft(value, num_points)
+    Npoints = int(len(valueFFT) / 2)
+    valueFFT = valueFFT[1 : Npoints + 1]
+    valueFFT = valueFFT / len(valueFFT)
+    n = np.arange(num_points)
+    freq = n / deltaT
+    return freq, valueFFT
+
+
+@pyaedt_function_handler()
+def conversion_function(data, function_str=None):  # pragma: no cover
+    """Convert input data based on a specified function string.
+
+    The available functions are:
+
+    - `"dB10"`: Converts the data to decibels using base 10 logarithm.
+    - `"dB20"`: Converts the data to decibels using base 20 logarithm.
+    - `"abs"`: Computes the absolute value of the data.
+    - `"real"`: Computes the real part of the data.
+    - `"imag"`: Computes the imaginary part of the data.
+    - `"norm"`: Normalizes the data to have values between 0 and 1.
+    - `"ang"`: Computes the phase angle of the data in radians.
+    - `"ang_deg"`: Computes the phase angle of the data in degrees.
+
+    If an invalid function string is specified, the method returns ``False``.
+
+    Parameters
+    ----------
+    data : list, numpy.array
+        Numerical values to convert. The format can be ``list`` or ``numpy.array``.
+    function_str : str, optional
+        Conversion function. The default is `"dB10"`.
+
+    Returns
+    -------
+    numpy.array or bool
+        Converted data, ``False`` otherwise.
+
+    Examples
+    --------
+    >>> data = [1, 2, 3, 4]
+    >>> conversion_function(data, "dB10")
+    array([-inf, 0., 4.77, 6.02])
+
+    >>> conversion_function(data, "abs")
+    array([1, 2, 3, 4])
+
+    >>> conversion_function(data, "ang_deg")
+    array([ 0., 0., 0., 0.])
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        logging.error("NumPy is not available. Install it.")
+        return False
+
+    function_str = function_str or "dB10"
+    available_functions = {
+        "dB10": lambda x: 10 * np.log10(np.abs(x)),
+        "dB20": lambda x: 20 * np.log10(np.abs(x)),
+        "abs": np.abs,
+        "real": np.real,
+        "imag": np.imag,
+        "norm": lambda x: np.abs(x) / np.max(np.abs(x)),
+        "ang": np.angle,
+        "ang_deg": lambda x: np.angle(x, deg=True),
+    }
+
+    if function_str not in available_functions:
+        logging.error("Specified conversion is not available.")
+        return False
+
+    data = available_functions[function_str](data)
+    return data
+
+
+def parse_excitation_file(
+    file_name,
+    is_time_domain=True,
+    x_scale=1,
+    y_scale=1,
+    impedance=50,
+    data_format="Power",
+    encoding="utf-8",
+    out_mag="Voltage",
+):
+    """Parse a csv file and convert data in list that can be applied to Hfss and Hfss3dLayout sources.
+
+    Parameters
+    ----------
+    file_name : str
+        Full name of the input file.
+    is_time_domain : bool, optional
+        Either if the input data is Time based or Frequency Based. Frequency based data are Mag/Phase (deg).
+    x_scale : float, optional
+        Scaling factor for x axis.
+    y_scale : float, optional
+        Scaling factor for y axis.
+    data_format : str, optional
+        Either `"Power"`, `"Current"` or `"Voltage"`.
+    impedance : float, optional
+        Excitation impedance. Default is `50`.
+    encoding : str, optional
+        Csv file encoding.
+    out_mag : str, optional
+        Output magnitude format. It can be `"Voltage"` or `"Power"` depending on Hfss solution.
+
+    Returns
+    -------
+    tuple
+        Frequency, magnitude and phase.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        logging.error("NumPy is not available. Install it.")
+        return False
+    df = read_csv_pandas(file_name, encoding=encoding)
+    if is_time_domain:
+        time = df[df.keys()[0]].values * x_scale
+        val = df[df.keys()[1]].values * y_scale
+        freq, fval = compute_fft(time, val)
+
+        if data_format.lower() == "current":
+            if out_mag == "Voltage":
+                fval = fval * impedance
+            else:
+                fval = fval * fval * impedance
+        elif data_format.lower() == "voltage":
+            if out_mag == "Power":
+                fval = fval * fval / impedance
+        else:
+            if out_mag == "Voltage":
+                fval = np.sqrt(fval * impedance)
+        mag = list(np.abs(fval))
+        phase = [math.atan2(j, i) * 180 / math.pi for i, j in zip(list(fval.real), list(fval.imag))]
+
+    else:
+        freq = list(df[df.keys()[0]].values * x_scale)
+        if data_format.lower() == "current":
+            mag = df[df.keys()[1]].values * df[df.keys()[1]].values * impedance * y_scale * y_scale
+        elif data_format.lower() == "voltage":
+            mag = df[df.keys()[1]].values * df[df.keys()[1]].values / impedance * y_scale * y_scale
+        else:
+            mag = df[df.keys()[1]].values * y_scale
+        mag = list(mag)
+        phase = list(df[df.keys()[2]].values)
+    return freq, mag, phase
+
+
+def tech_to_control_file(tech_path, unit="nm", control_path=None):
+    """Convert a TECH file to an XML file for use in a GDS or DXF import.
+
+    Parameters
+    ----------
+    tech_path : str
+        Full path to the TECH file.
+    unit : str, optional
+        Tech units. If specified in tech file this parameter will not be used. Default is ``"nm"``.
+    control_path : str, optional
+        Path for outputting the XML file.
+
+    Returns
+    -------
+    str
+        Out xml file.
+    """
+    result = []
+    with open(tech_path) as f:
+        vals = list(CSS4_COLORS.values())
+        id_layer = 0
+        for line in f:
+            line_split = line.split()
+            if len(line_split) == 5:
+                layerID, layer_name, _, elevation, layer_height = line.split()
+                x = '      <Layer Color="{}" GDSIIVia="{}" Name="{}" TargetLayer="{}" Thickness="{}"'.format(
+                    vals[id_layer],
+                    "true" if layer_name.lower().startswith("v") else "false",
+                    layerID,
+                    layer_name,
+                    layer_height,
+                )
+                x += ' Type="conductor"/>'
+                result.append(x)
+                id_layer += 1
+            elif len(line_split) > 1 and "UNIT" in line_split[0]:
+                unit = line_split[1]
+    if not control_path:
+        control_path = os.path.splitext(tech_path)[0] + ".xml"
+    with open(control_path, "w") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n')
+        f.write('    <c:Control xmlns:c="http://www.ansys.com/control" schemaVersion="1.0">\n')
+        f.write("\n")
+        f.write('      <Stackup schemaVersion="1.0">\n')
+        f.write('        <Layers LengthUnit="{}">\n'.format(unit))
+        for res in result:
+            f.write(res + "\n")
+
+        f.write("    </Layers>\n")
+        f.write("  </Stackup>\n")
+        f.write("\n")
+        f.write('  <ImportOptions Flatten="true" GDSIIConvertPolygonToCircles="false" ImportDummyNet="true"/>\n')
+        f.write("\n")
+        f.write("</c:Control>\n")
+
+    return control_path
 
 
 class PropsManager(object):
@@ -938,14 +1536,18 @@ class PropsManager(object):
             Key to search
         """
         item_split = item.split("/")
+        if len(item_split) == 1:
+            item_split = item_split[0].split("__")
         props = self.props
         found_el = []
         matching_percentage = 1
         while matching_percentage >= 0.4:
             for item_value in item_split:
-                found_el = difflib.get_close_matches(item_value, list(props.keys()), 1, 0.8)
+                found_el = self._recursive_search(props, item_value, matching_percentage)
+                # found_el = difflib.get_close_matches(item_value, list(props.keys()), 1, matching_percentage)
                 if found_el:
-                    props = props[found_el[0]]
+                    props = found_el[1][found_el[2]]
+                    # props = props[found_el[0]]
             if found_el:
                 return props
             else:
@@ -960,10 +1562,12 @@ class PropsManager(object):
         ----------
         key : str
             Key to apply.
-        value : int or float or bool or str or dict
-            Value to apply
+        value : int, float, bool, str, dict
+            Value to apply.
         """
         item_split = key.split("/")
+        if len(item_split) == 1:
+            item_split = item_split[0].split("__")
         found_el = []
         props = self.props
         matching_percentage = 1
@@ -1005,6 +1609,11 @@ class PropsManager(object):
                     out_val = self._recursive_search(v, key, matching_percentage)
                     if out_val:
                         return out_val
+                elif isinstance(v, list) and isinstance(v[0], (dict, OrderedDict)):
+                    for val in v:
+                        out_val = self._recursive_search(val, key, matching_percentage)
+                        if out_val:
+                            return out_val
         return False
 
     @pyaedt_function_handler()
@@ -1028,7 +1637,9 @@ class PropsManager(object):
         -------
         list
         """
-        return self._recursive_list(self.props)
+        if self.props:
+            return self._recursive_list(self.props)
+        return []
 
     @pyaedt_function_handler()
     def update(self):
@@ -1036,184 +1647,319 @@ class PropsManager(object):
         pass
 
 
-class Settings(object):
-    """Class that manages all PyAEDT Environment Variables and global settings."""
+clamp = lambda n, minn, maxn: max(min(maxn, n), minn)
+rgb_color_codes = {
+    "Black": (0, 0, 0),
+    "Green": (0, 128, 0),
+    "White": (255, 255, 255),
+    "Red": (255, 0, 0),
+    "Lime": (0, 255, 0),
+    "Blue": (0, 0, 255),
+    "Yellow": (255, 255, 0),
+    "Cyan": (0, 255, 255),
+    "Magenta": (255, 0, 255),
+    "Silver": (192, 192, 192),
+    "Gray": (128, 128, 128),
+    "Maroon": (128, 0, 0),
+    "Olive": (128, 128, 0),
+    "Purple": (128, 0, 128),
+    "Teal": (0, 128, 128),
+    "Navy": (0, 0, 128),
+    "copper": (184, 115, 51),
+    "stainless steel": (224, 223, 219),
+}
 
-    def __init__(self):
-        self._enable_logger = True
-        self._enable_desktop_logs = True
-        self._enable_screen_logs = True
-        self._enable_file_logs = True
-        self.pyaedt_server_path = ""
-        self._logger_file_path = None
-        self._logger_formatter = "%(asctime)s:%(destination)s:%(extra)s%(levelname)-8s:%(message)s"
-        self._logger_datefmt = "%Y/%m/%d %H.%M.%S"
-        self._enable_debug_edb_logger = False
-        self._enable_debug_geometry_operator_logger = False
-        self._enable_debug_internal_methods_logger = False
-        self._enable_debug_logger = False
-        self._enable_error_handler = True
-        self._non_graphical = False
-        self.aedt_version = None
-        self.remote_api = False
-        self._use_grpc_api = False
-        self.machine = ""
-        self.port = 0
-        self.formatter = None
-        self.remote_rpc_session = None
-        self.remote_rpc_session_temp_folder = ""
-        self.remote_rpc_service_manager_port = 17878
-        self._project_properties = {}
-        self._project_time_stamp = 0
 
-    @property
-    def use_grpc_api(self):
-        """Set/Get 20222R2 GPRC API usage or Legacy COM Objectr.
+@pyaedt_function_handler()
+def _arg2dict(arg, dict_out):
+    if arg[0] == "NAME:DimUnits" or "NAME:Point" in arg[0]:
+        if arg[0][5:] in dict_out:
+            if isinstance(dict_out[arg[0][5:]][0], (list, tuple)):
+                dict_out[arg[0][5:]].append(list(arg[1:]))
+            else:
+                dict_out[arg[0][5:]] = [dict_out[arg[0][5:]]]
+                dict_out[arg[0][5:]].append(list(arg[1:]))
+        else:
+            dict_out[arg[0][5:]] = list(arg[1:])
+    elif arg[0][:5] == "NAME:":
+        top_key = arg[0][5:]
+        dict_in = OrderedDict()
+        i = 1
+        while i < len(arg):
+            if arg[i][0][:5] == "NAME:" and (
+                isinstance(arg[i], (list, tuple)) or str(type(arg[i])) == r"<type 'List'>"
+            ):
+                _arg2dict(list(arg[i]), dict_in)
+                i += 1
+            elif arg[i][-2:] == ":=":
+                if str(type(arg[i + 1])) == r"<type 'List'>":
+                    if arg[i][:-2] in dict_in:
+                        dict_in[arg[i][:-2]].append(list(arg[i + 1]))
+                    else:
+                        dict_in[arg[i][:-2]] = list(arg[i + 1])
+                else:
+                    if arg[i][:-2] in dict_in:
+                        if isinstance(dict_in[arg[i][:-2]], list):
+                            dict_in[arg[i][:-2]].append(arg[i + 1])
+                        else:
+                            dict_in[arg[i][:-2]] = [dict_in[arg[i][:-2]]]
+                            dict_in[arg[i][:-2]].append(arg[i + 1])
+                    else:
+                        dict_in[arg[i][:-2]] = arg[i + 1]
 
-        Returns
-        -------
-        bool
-        """
-        return self._use_grpc_api
+                i += 2
+            else:
+                raise ValueError("Incorrect data argument format")
+        if top_key in dict_out:
+            if isinstance(dict_out[top_key], list):
+                dict_out[top_key].append(dict_in)
+            else:
+                dict_out[top_key] = [dict_out[top_key], dict_in]
+        else:
+            dict_out[top_key] = dict_in
+    else:
+        raise ValueError("Incorrect data argument format")
 
-    @use_grpc_api.setter
-    def use_grpc_api(self, val):
-        """Set/Get 20222R2 GPRC API usage or Legacy COM Objectr."""
-        self._use_grpc_api = val
 
-    @property
-    def logger(self):
-        """Return the active logger."""
+def _uname(name=None):
+    """Append a 6-digit hash code to a specified name.
+
+    Parameters
+    ----------
+    name : str
+        Name to append the hash code to. The default is ``"NewObject_"``.
+
+    Returns
+    -------
+    str
+
+    """
+    char_set = string.ascii_uppercase + string.digits
+    unique_name = "".join(random.sample(char_set, 6))
+    if name:
+        return name + unique_name
+    else:
+        return "NewObject_" + unique_name
+
+
+@pyaedt_function_handler()
+def _to_boolean(val):
+    """Retrieve the Boolean value of the provided input.
+
+        If the value is a Boolean, return the value.
+        Otherwise check to see if the value is in
+        ["false", "f", "no", "n", "none", "0", "[]", "{}", "" ]
+        and return True if the value is not in the list.
+
+    Parameters
+    ----------
+    val : bool or str
+        Input value to test for True/False condition.
+
+    Returns
+    -------
+    bool
+
+    """
+
+    if val is True or val is False:
+        return val
+
+    false_items = ["false", "f", "no", "n", "none", "0", "[]", "{}", ""]
+
+    return not str(val).strip().lower() in false_items
+
+
+@pyaedt_function_handler()
+def _dim_arg(value, units):
+    """Concatenate a specified units string to a numerical input.
+
+    Parameters
+    ----------
+    value : str or number
+        Valid expression string in the AEDT modeler. For example, ``"5mm"``.
+    units : str
+        Valid units string in the AEDT modeler. For example, ``"mm"``.
+
+    Returns
+    -------
+    str
+
+    """
+    try:
+        val = float(value)
+        if isinstance(value, int):
+            val = value
+        return str(val) + units
+    except:
+        return value
+
+
+@pyaedt_function_handler()
+def _check_installed_version(install_path, long_version):
+    """Check installation folder to determine if it is for specified Ansys EM version.
+
+    Parameters
+    ----------
+    install_path: str
+        Installation folder to check.  For example, ``"C:\\Program Files\\AnsysEM\\v231\\Win64"``.
+    long_version: str
+        Long form of version number.  For example, ``"2023.1"``.
+
+    Returns
+    -------
+    bool
+
+    """
+    product_list_path = os.path.join(install_path, "config", "ProductList.txt")
+    if os.path.isfile(product_list_path):
         try:
-            return logging.getLogger("Global")
+            with open(product_list_path, "r") as f:
+                install_version = f.readline().strip()[-6:]
+                if install_version == long_version:
+                    return True
         except:
-            return logging.getLogger(__name__)
-
-    @property
-    def non_graphical(self):
-        """Return the non graphical flag."""
-        return self._non_graphical
-
-    @non_graphical.setter
-    def non_graphical(self, val):
-        self._non_graphical = val
-
-    @property
-    def enable_error_handler(self):
-        """Return the Environment Variable Content."""
-        return self._enable_error_handler
-
-    @enable_error_handler.setter
-    def enable_error_handler(self, val):
-        self._enable_error_handler = val
-
-    @property
-    def enable_desktop_logs(self):
-        """Return the Environment Variable Content."""
-        return self._enable_desktop_logs
-
-    @enable_desktop_logs.setter
-    def enable_desktop_logs(self, val):
-        self._enable_desktop_logs = val
-
-    @property
-    def enable_screen_logs(self):
-        """Return the Environment Variable Content."""
-        return self._enable_screen_logs
-
-    @enable_screen_logs.setter
-    def enable_screen_logs(self, val):
-        self._enable_screen_logs = val
-
-    @property
-    def pyaedt_server_path(self):
-        """Return the Environment Variable Content."""
-        return os.getenv("PYAEDT_SERVER_AEDT_PATH", "")
-
-    @pyaedt_server_path.setter
-    def pyaedt_server_path(self, val):
-        os.environ["PYAEDT_SERVER_AEDT_PATH"] = str(val)
-
-    @property
-    def enable_file_logs(self):
-        """Return the Environment Variable Content."""
-        return self._enable_file_logs
-
-    @enable_file_logs.setter
-    def enable_file_logs(self, val):
-        self._enable_file_logs = val
-
-    @property
-    def enable_logger(self):
-        """Return the Environment Variable Content."""
-        return self._enable_logger
-
-    @enable_logger.setter
-    def enable_logger(self, val):
-        self._enable_logger = val
-
-    @property
-    def logger_file_path(self):
-        """Return the Environment Variable Content."""
-        return self._logger_file_path
-
-    @logger_file_path.setter
-    def logger_file_path(self, val):
-        self._logger_file_path = val
-
-    @property
-    def logger_formatter(self):
-        """Return the Environment Variable Content."""
-        return self._logger_formatter
-
-    @logger_formatter.setter
-    def logger_formatter(self, val):
-        self._logger_formatter = val
-
-    @property
-    def logger_datefmt(self):
-        """Return the Environment Variable Content."""
-        return self._logger_datefmt
-
-    @logger_datefmt.setter
-    def logger_datefmt(self, val):
-        self._logger_datefmt = val
-
-    @property
-    def enable_debug_edb_logger(self):
-        """Return the Environment Variable Content."""
-        return self._enable_debug_edb_logger
-
-    @enable_debug_edb_logger.setter
-    def enable_debug_edb_logger(self, val):
-        self._enable_debug_edb_logger = val
-
-    @property
-    def enable_debug_geometry_operator_logger(self):
-        """Return the Environment Variable Content."""
-        return self._enable_debug_geometry_operator_logger
-
-    @enable_debug_geometry_operator_logger.setter
-    def enable_debug_geometry_operator_logger(self, val):
-        self._enable_debug_geometry_operator_logger = val
-
-    @property
-    def enable_debug_internal_methods_logger(self):
-        """Return the Environment Variable Content."""
-        return self._enable_debug_internal_methods_logger
-
-    @enable_debug_internal_methods_logger.setter
-    def enable_debug_internal_methods_logger(self, val):
-        self._enable_debug_internal_methods_logger = val
-
-    @property
-    def enable_debug_logger(self):
-        """Return the Environment Variable Content."""
-        return self._enable_debug_logger
-
-    @enable_debug_logger.setter
-    def enable_debug_logger(self, val):
-        self._enable_debug_logger = val
+            pass
+    return False
 
 
-settings = Settings()
+def install_with_pip(package_name, package_path=None, upgrade=False, uninstall=False):  # pragma: no cover
+    """Install a new package using pip.
+    This method is useful for installing a package from the AEDT Console without launching the Python environment.
+
+    Parameters
+    ----------
+    package_name : str
+        Name of the package to install.
+    package_path : str, optional
+        Path for the GitHub package to download and install. For example, ``git+https://.....``.
+    upgrade : bool, optional
+        Whether to upgrade the package. The default is ``False``.
+    uninstall : bool, optional
+        Whether to install the package or uninstall the package.
+    """
+    if is_linux and is_ironpython:
+        import subprocessdotnet as subprocess
+    else:
+        import subprocess
+    executable = '"{}"'.format(sys.executable) if is_windows else sys.executable
+
+    commands = []
+    if uninstall:
+        commands.append([executable, "-m", "pip", "uninstall", "--yes", package_name])
+    else:
+        if package_path and upgrade:
+            commands.append([executable, "-m", "pip", "uninstall", "--yes", package_name])
+            command = [executable, "-m", "pip", "install", package_path]
+        else:
+            command = [executable, "-m", "pip", "install", package_name]
+        if upgrade:
+            command.append("-U")
+
+        commands.append(command)
+    for command in commands:
+        if is_linux:
+            p = subprocess.Popen(command)
+        else:
+            p = subprocess.Popen(" ".join(command))
+        p.wait()
+
+
+class Help:  # pragma: no cover
+    def __init__(self):
+        self._base_path = "https://aedt.docs.pyansys.com/version/stable"
+        self.browser = "default"
+
+    def _launch_ur(self, url):
+        import webbrowser
+
+        if self.browser != "default":
+            webbrowser.get(self.browser).open_new_tab(url)
+        else:
+            webbrowser.open_new_tab(url)
+
+    def search(self, keywords, app_name=None, search_in_examples_only=False):
+        """Search for one or more keywords.
+
+        Parameters
+        ----------
+        keywords : str or list
+        app_name : str, optional
+            Name of a PyAEDT app. For example, ``"Hfss"``, ``"Circuit"``, ``"Icepak"``, or any other available app.
+        search_in_examples_only : bool, optional
+            Whether to search for the one or more keywords only in the PyAEDT examples.
+            The default is ``False``.
+        """
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        if search_in_examples_only:
+            keywords.append("This example")
+        if app_name:
+            keywords.append(app_name)
+        url = self._base_path + "/search.html?q={}".format("+".join(keywords))
+        self._launch_ur(url)
+
+    def getting_started(self):
+        """Open the PyAEDT User guide page."""
+        url = self._base_path + "/User_guide/index.html"
+        self._launch_ur(url)
+
+    def examples(self):
+        """Open the PyAEDT Examples page."""
+        url = self._base_path + "/examples/index.html"
+        self._launch_ur(url)
+
+    def github(self):
+        """Open the PyAEDT GitHub page."""
+        url = "https://github.com/ansys/pyaedt"
+        self._launch_ur(url)
+
+    def changelog(self, release=None):
+        """Open the PyAEDT GitHub Changelog for a given release.
+
+        Parameters
+        ----------
+        release : str, optional
+            Release to get the changelog for. For example, ``"0.6.70"``.
+        """
+        if release is None:
+            from pyaedt import __version__ as release
+        url = "https://github.com/ansys/pyaedt/releases/tag/v" + release
+        self._launch_ur(url)
+
+    def issues(self):
+        """Open the PyAEDT GitHub Issues page."""
+        url = "https://github.com/ansys/pyaedt/issues"
+        self._launch_ur(url)
+
+    def ansys_forum(self):
+        """Open the PyAEDT GitHub Issues page."""
+        url = "https://discuss.ansys.com/discussions/tagged/pyaedt"
+        self._launch_ur(url)
+
+    def developer_forum(self):
+        """Open the Discussions page on the Ansys Developer site."""
+        url = "https://developer.ansys.com/"
+        self._launch_ur(url)
+
+
+# class Property(property):
+#
+#     @pyaedt_function_handler()
+#     def getter(self, fget):
+#         """Property getter."""
+#         return self.__class__.__base__(fget, self.fset, self.fdel, self.__doc__)
+#
+#     @pyaedt_function_handler()
+#     def setter(self, fset):
+#         """Property setter."""
+#         return self.__class__.__base__(self.fget, fset, self.fdel, self.__doc__)
+#
+#     @pyaedt_function_handler()
+#     def deleter(self, fdel):
+#         """Property deleter."""
+#         return self.__class__.__base__(self.fget, self.fset, fdel, self.__doc__)
+
+# property = Property
+
+online_help = Help()

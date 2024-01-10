@@ -7,18 +7,20 @@ from __future__ import absolute_import  # noreorder
 import copy
 import fnmatch
 import json
+import math
 import os
 import re
+import sys
 
+from pyaedt import is_ironpython
 from pyaedt import settings
 from pyaedt.generic.DataHandlers import _arg2dict
 from pyaedt.generic.general_methods import _create_json_file
-from pyaedt.generic.general_methods import _retry_ntimes
 from pyaedt.generic.general_methods import generate_unique_name
 from pyaedt.generic.general_methods import open_file
 from pyaedt.generic.general_methods import pyaedt_function_handler
-from pyaedt.modules.Material import Material
 from pyaedt.modules.Material import MatProperties
+from pyaedt.modules.Material import Material
 from pyaedt.modules.Material import OrderedDict
 from pyaedt.modules.Material import SurfaceMaterial
 
@@ -39,27 +41,34 @@ class Materials(object):
     """
 
     def __init__(self, app):
+        app.logger.reset_timer()
         self._app = app
         self._color_id = 0
-        self.odefinition_manager = self._app.odefinition_manager
-        self.omaterial_manager = self._app.omaterial_manager
         self._mats = []
         self._mats_lower = []
         self._desktop = self._app.odesktop
         self._oproject = self._app.oproject
         self.logger = self._app.logger
-        self.logger.info("Successfully loaded project materials !")
-        # self.material_keys = self._get_materials()
         self.material_keys = {}
         self._surface_material_keys = {}
         self._load_from_project()
-        pass
+        app.logger.info_timer("Material library initialized and project materials loaded successfully!")
+
+    @property
+    def odefinition_manager(self):
+        """Definition Manager from AEDT."""
+        return self._app.odefinition_manager
+
+    @property
+    def omaterial_manager(self):
+        """Material Manager from AEDT."""
+        return self._app.omaterial_manager
 
     def __len__(self):
         return len(self.material_keys)
 
     def __iter__(self):
-        return self.material_keys.itervalues()
+        return iter(self.material_keys.values()) if sys.version_info.major > 2 else self.material_keys.itervalues()
 
     def __getitem__(self, item):
         matobj = self.checkifmaterialexists(item)
@@ -123,6 +132,16 @@ class Materials(object):
             self._mats_lower = [i.lower() for i in self._mat_names_aedt]
         return self._mats_lower
 
+    @property
+    def mat_names_aedt(self):
+        """List material names."""
+        return self._mat_names_aedt
+
+    @property
+    def mat_names_aedt_lower(self):
+        """List material names with lower case."""
+        return self._mat_names_aedt_lower
+
     @pyaedt_function_handler()
     def _read_materials(self):
         def get_mat_list(file_name):
@@ -175,22 +194,9 @@ class Materials(object):
     def _get_aedt_case_name(self, material_name):
         if material_name.lower() in self.material_keys:
             return self.material_keys[material_name.lower()].name
-        if material_name.lower() in self._mat_names_aedt_lower:
-            return self._mat_names_aedt[self._mat_names_aedt_lower.index(material_name.lower())]
+        if material_name.lower() in self.mat_names_aedt_lower:
+            return self._mat_names_aedt[self.mat_names_aedt_lower.index(material_name.lower())]
         return False
-
-    @pyaedt_function_handler()
-    def _get_materials(self):
-        """Get materials."""
-        mats = {}
-        try:
-            for ds in self._app.project_properties["AnsoftProject"]["Definitions"]["Materials"]:
-                mats[ds.lower()] = Material(
-                    self, ds, self._app.project_properties["AnsoftProject"]["Definitions"]["Materials"][ds]
-                )
-        except:
-            pass
-        return mats
 
     @pyaedt_function_handler()
     def _get_surface_materials(self):
@@ -201,6 +207,7 @@ class Materials(object):
                     self,
                     ds,
                     self._app.project_properties["AnsoftProject"]["Definitions"]["SurfaceMaterials"][ds],
+                    material_update=False,
                 )
         except:
             pass
@@ -233,14 +240,14 @@ class Materials(object):
             else:
                 return False
         if mat.lower() in self.material_keys:
-            if mat.lower() in self._mat_names_aedt_lower:
+            if mat.lower() in self.mat_names_aedt_lower:
                 return self.material_keys[mat.lower()]
             if mat.lower() not in list(self.odefinition_manager.GetProjectMaterialNames()):
                 self.material_keys[mat.lower()].update()
             return self.material_keys[mat.lower()]
-        elif mat.lower() in self._mat_names_aedt_lower:
+        elif mat.lower() in self.mat_names_aedt_lower:
             return self._aedmattolibrary(mat)
-        elif settings.remote_api:
+        elif settings.remote_api or settings.remote_rpc_session:
             return self._aedmattolibrary(mat)
         return False
 
@@ -310,8 +317,8 @@ class Materials(object):
         elif self._get_aedt_case_name(materialname):
             return self._aedmattolibrary(self._get_aedt_case_name(materialname))
         else:
-            material = Material(self, materialname, props)
-            if material.update():
+            material = Material(self, materialname, props, material_update=True)
+            if material:
                 self.logger.info("Material has been added. Edit it to update in Desktop.")
                 self.material_keys[materialname.lower()] = material
                 self._mats.append(materialname)
@@ -355,10 +362,11 @@ class Materials(object):
             self.logger.warning("Warning. The material is already in the database. Change the name or edit it.")
             return self.surface_material_keys[material_name.lower()]
         else:
-            material = SurfaceMaterial(self._app, material_name)
+            material = SurfaceMaterial(self._app, material_name, material_update=False)
             if emissivity:
                 material.emissivity = emissivity
-                material.update()
+            material.update()
+            material._material_update = True
             self.logger.info("Material has been added. Edit it to update in Desktop.")
             self.surface_material_keys[material_name.lower()] = material
             return self.surface_material_keys[material_name.lower()]
@@ -384,22 +392,15 @@ class Materials(object):
         return matprop
 
     @pyaedt_function_handler()
-    def add_material_sweep(self, swargs, matname):
+    def add_material_sweep(self, materials_list, material_name):
         """Create a sweep material made of an array of materials.
-
-        If a material needs to have a dataset (thermal modifier), then a
-        dataset is created. Material properties are loaded from the XML file
-        database ``amat.xml``.
 
         Parameters
         ----------
-        swargs : list
+        materials_list : list
             List of materials to merge into a single sweep material.
-        matname : str
+        material_name : str
             Name of the sweep material.
-        enableTM : bool, optional
-            Unavailable currently. Whether to enable the thermal modifier.
-            The default is ``True``.
 
         Returns
         -------
@@ -421,37 +422,49 @@ class Materials(object):
         >>> hfss.materials.add_material_sweep(["MyMaterial", "MyMaterial2"], "Sweep_copper")
         """
         matsweep = []
-        for args in swargs:
-            matobj = self.checkifmaterialexists(args)
+        for mat in materials_list:
+            matobj = self.checkifmaterialexists(mat)
             if matobj:
                 matsweep.append(matobj)
 
         mat_dict = self._create_mat_project_vars(matsweep)
 
-        newmat = Material(self, matname)
-        index = "$ID" + matname
+        newmat = Material(self, material_name, material_update=False)
+        index = "$ID" + material_name
         newmat.is_sweep_material = True
         self._app[index] = 0
         for el in mat_dict:
             if el in list(mat_dict.keys()):
-                self._app["$" + matname + el] = mat_dict[el]
-                newmat.__dict__["_" + el].value = "$" + matname + el + "[" + index + "]"
-                newmat._update_props(el, "$" + matname + el + "[" + index + "]", False)
+                array_var_name = "$" + material_name + "_" + el
+                self._app[array_var_name] = mat_dict[el]
+                newmat.__dict__["_" + el].value = array_var_name + "[" + index + "]"
+                newmat._update_props(el, array_var_name + "[" + index + "]", False)
 
         newmat.update()
-        self.material_keys[matname.lower()] = newmat
+        self.material_keys[material_name.lower()] = newmat
         return index
 
     @pyaedt_function_handler()
-    def duplicate_material(self, material, new_name):
+    def duplicate_material(self, material_name, new_name=None, props=None):
         """Duplicate a material.
 
         Parameters
         ----------
-        material : str
+        material_name : str
             Name of the material.
         new_name : str
-            Name for the copy of the material.
+            Name for the copy of the material. If a new name is not specified,
+            the new material name is ``material_name`` plusa  "_clone"`` suffix.
+        props : list
+            List of properties to parameterize when the material is duplicated.
+            Parameterized properties have project scope. Options are:
+
+            - `'permittivity'`
+            - `'permeability'`
+            - `'conductivity'`
+            - '`dielectric_loss_tan'`
+            - '`magnetic_loss_tan'`
+
 
         Returns
         -------
@@ -471,19 +484,51 @@ class Materials(object):
         >>> hfss.materials.duplicate_material("MyMaterial", "MyMaterial2")
 
         """
-        if material.lower() not in list(self.material_keys.keys()):
-            self.logger.error("Material {} is not present".format(material))
-            return False
-        if material.lower() not in list(self.material_keys.keys()):
-            matobj = self._aedmattolibrary(material)
-        else:
-            matobj = self.material_keys[material.lower()]
+        # Special characters must be removed from material names to make
+        # valid strings for parameter names.
+        replace_characters = [(" ", "_"), ("(", ""), (")", ""), ("/", "_"), ("-", "_"), (".", "_"), (",", "_")]
+        valid_prop_names = (
+            "permittivity",
+            "permeability",
+            "conductivity",
+            "dielectric_loss_tangent",
+            "magnetic_loss_tangent",
+        )
 
-        newmat = Material(self, new_name, matobj._props)
-        newmat.update()
+        # Get the material definition.
+        material_in_aedt = material_name.lower() in list(self.mat_names_aedt_lower)
+        material_in_project = material_name.lower() in list(self.material_keys.keys())
+        if not (material_in_aedt or material_in_project):  # Check for material definition
+            self.logger.error("Material {} is not present".format(material_name))
+            return False
+        if not material_in_project:
+            material = self._aedmattolibrary(material_name)
+        else:
+            material = self.material_keys[material_name.lower()]
+
+        if not new_name:
+            new_name = material_name + "_clone"
+        new_material = Material(self, new_name, material._props, material_update=False)
+
+        # Parameterize material properties if these were passed.
+        if props:
+            for p in props:
+                if p in valid_prop_names:
+                    var_name = "$" + new_name + "_" + p
+                    for r in replace_characters:
+                        var_name = var_name.replace(r[0], r[1])
+                    self._app[var_name] = getattr(
+                        material, p
+                    ).value  # Assign default value to parameterized material parameter.
+                    try:
+                        setattr(new_material, p, var_name)
+                    except TypeError:
+                        print("p = {}".format(p))
+        new_material.update()
+        new_material._material_update = True
         self._mats.append(new_name)
-        self.material_keys[new_name.lower()] = newmat
-        return newmat
+        self.material_keys[new_name.lower()] = new_material
+        return new_material
 
     @pyaedt_function_handler()
     def duplicate_surface_material(self, material, new_name):
@@ -516,8 +561,9 @@ class Materials(object):
         if not material.lower() in list(self.surface_material_keys.keys()):
             self.logger.error("Material {} is not present".format(material))
             return False
-        newmat = SurfaceMaterial(self, new_name.lower(), self.surface_material_keys[material.lower()]._props)
-        newmat.update()
+        newmat = SurfaceMaterial(
+            self, new_name.lower(), self.surface_material_keys[material.lower()]._props, material_update=True
+        )
         self.surface_material_keys[new_name.lower()] = newmat
         return newmat
 
@@ -595,6 +641,8 @@ class Materials(object):
     def _load_from_project(self):
         if self.odefinition_manager:
             mats = self.odefinition_manager.GetProjectMaterialNames()
+            if not mats:
+                mats = []
             for el in mats:
                 if el not in list(self.material_keys.keys()):
                     try:
@@ -614,14 +662,17 @@ class Materials(object):
         -------
         :class:`pyaedt.modules.Material.Material`
         """
-        if matname not in self.odefinition_manager.GetProjectMaterialNames() and not settings.remote_api:
+        if matname not in self.odefinition_manager.GetProjectMaterialNames() and not (
+            settings.remote_api or settings.remote_rpc_session
+        ):
             matname = self._get_aedt_case_name(matname)
         props = {}
-        _arg2dict(list(_retry_ntimes(20, self.omaterial_manager.GetData, matname)), props)
+        _arg2dict(list(self.omaterial_manager.GetData(matname)), props)
         values_view = props.values()
         value_iterator = iter(values_view)
         first_value = next(value_iterator)
-        newmat = Material(self, matname, first_value)
+        newmat = Material(self, matname, first_value, material_update=False)
+        newmat._material_update = True
         self.material_keys[matname.lower()] = newmat
         return self.material_keys[matname.lower()]
 
@@ -708,10 +759,10 @@ class Materials(object):
 
         Returns
         -------
-        bool
-            ``True`` when successful, ``False`` when failed.
+        List of :class:`pyaedt.modules.Material.Material`
 
         """
+        materials_added = []
         with open_file(full_json_path, "r") as json_file:
             data = json.load(json_file)
 
@@ -742,7 +793,78 @@ class Materials(object):
                 self.logger.warning("Material %s already exists. Renaming to %s", el, newname)
             else:
                 newname = el
-            newmat = Material(self, newname, val)
-            newmat.update()
+            newmat = Material(self, newname, val, material_update=True)
+            # newmat.update()
             self.material_keys[newname] = newmat
-        return True
+            materials_added.append(newmat)
+        return materials_added
+
+    @pyaedt_function_handler()
+    def import_materials_from_excel(self, material_file):
+        """Import and create materials from a csv or excel file.
+
+        Parameters
+        ----------
+        material_file : str
+            Full path and name for the csv or xlsx file.
+
+        Returns
+        -------
+        List of :class:`pyaedt.modules.Material.Material`
+
+        """
+        try:  # pragma: no cover
+            import pandas as pd
+        except ImportError:
+            self.logger.error("Pandas is needed. Install it.")
+            return False
+        materials_added = []
+        props = {}
+        if is_ironpython:
+            self.logger.error("This method only works with CPython.")
+            return False
+        if os.path.splitext(material_file)[1] == ".csv":
+            df = pd.read_csv(material_file, index_col=0)
+        elif os.path.splitext(material_file)[1] == ".xlsx":
+            df = pd.read_excel(material_file, index_col=0)
+        else:
+            self.logger.error("Only csv and xlsx are supported.")
+            return False
+        keys = [i.lower() for i in list(df.keys())]
+        for el, val in df[::-1].iterrows():
+            if isinstance(el, float):
+                break
+            if el.lower() in list(self.material_keys.keys()):
+                newname = generate_unique_name(el)
+                self.logger.warning("Material %s already exists. Renaming to %s", el, newname)
+            else:
+                newname = el
+            for prop in MatProperties.aedtname:
+                if (
+                    prop in keys
+                    and val[keys.index(prop)]
+                    and not (isinstance(val[keys.index(prop)], float) and math.isnan(val[keys.index(prop)]))
+                ):
+                    props[prop] = float(val[keys.index(prop)])
+            new_material = Material(self, newname, props, material_update=True)
+            # new_material.update()
+            self.material_keys[newname] = new_material
+            materials_added.append(new_material)
+
+        return materials_added
+
+    @pyaedt_function_handler
+    def get_used_project_material_names(self):
+        """Get list of material names in current project.
+
+        Returns
+        -------
+        List of str
+            List of material names used in the current project.
+
+        References
+        ----------
+
+        >>> oDefinitionManager.GetInUseProjectMaterialNames
+        """
+        return self.odefinition_manager.GetInUseProjectMaterialNames()

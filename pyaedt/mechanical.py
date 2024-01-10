@@ -7,6 +7,7 @@ from pyaedt.application.Analysis3D import FieldAnalysis3D
 from pyaedt.generic.general_methods import generate_unique_name
 from pyaedt.generic.general_methods import pyaedt_function_handler
 from pyaedt.modules.Boundary import BoundaryObject
+from pyaedt.modules.SetupTemplates import SetupKeys
 
 
 class Mechanical(FieldAnalysis3D, object):
@@ -30,10 +31,11 @@ class Mechanical(FieldAnalysis3D, object):
         Name of the setup to use as the nominal. The default is
         ``None``, in which case the active setup is used or
         nothing is used.
-    specified_version : str, optional
+    specified_version : str, int, float, optional
         Version of AEDT to use. The default is ``None``, in which case
         the active version or latest installed version is used.
         This parameter is ignored when a script is launched within AEDT.
+        Examples of input values are ``232``, ``23.2``,``2023.2``,``"2023.2"``.
     non_graphical : bool, optional
         Whether to launch AEDT in the non-graphical mode. The default
         is ``False``, in which case AEDT is launched in the graphical mode.
@@ -85,11 +87,11 @@ class Mechanical(FieldAnalysis3D, object):
 
     >>> aedtapp = Mechanical("myfile.aedt")
 
-    Create a ``Desktop on 2021R2`` object and then create an
+    Create a ``Desktop on 2023 R2`` object and then create an
     ``Mechanical`` object and open the specified project, which is
     named ``"myfile.aedt"``.
 
-    >>> aedtapp = Mechanical(specified_version="2021.2", projectname="myfile.aedt")
+    >>> aedtapp = Mechanical(specified_version=23.2, projectname="myfile.aedt")
 
     """
 
@@ -108,7 +110,6 @@ class Mechanical(FieldAnalysis3D, object):
         port=0,
         aedt_process_id=None,
     ):
-
         FieldAnalysis3D.__init__(
             self,
             "Mechanical",
@@ -126,6 +127,9 @@ class Mechanical(FieldAnalysis3D, object):
             aedt_process_id,
         )
 
+    def _init_from_design(self, *args, **kwargs):
+        self.__init__(*args, **kwargs)
+
     def __enter__(self):
         return self
 
@@ -136,10 +140,10 @@ class Mechanical(FieldAnalysis3D, object):
         setupname="Setup1",
         sweepname="LastAdaptive",
         map_frequency=None,
-        surface_objects=[],
+        surface_objects=None,
         source_project_name=None,
-        paramlist=[],
-        object_list=[],
+        paramlist=None,
+        object_list=None,
     ):
         """Map EM losses to a Mechanical design.
 
@@ -155,14 +159,14 @@ class Mechanical(FieldAnalysis3D, object):
             Frequency to map. The default is ``None``. The value must be ``None`` for
             Eigenmode analysis.
         surface_objects : list, optional
-            List objects in the source that are metals. The default is ``[]``.
+            List objects in the source that are metals. The default is ``None``.
         source_project_name : str, optional
             Name of the source project. The default is ``None``, in which case
             the source from the same project is used.
         paramlist : list, optional
-            List of all parameters in the EM to map. The default is ``[]``.
+            List of all parameters in the EM to map. The default is ``None``.
         object_list : list, optional
-             The default is ``[]``.
+             The default is ``None``.
 
         Returns
         -------
@@ -173,7 +177,14 @@ class Mechanical(FieldAnalysis3D, object):
 
         >>> oModule.AssignEMLoss
         """
-        assert self.solution_type == "Thermal", "This method works only in a Mechanical Structural analysis."
+        if surface_objects is None:
+            surface_objects = []
+        if paramlist is None:
+            paramlist = []
+        if object_list is None:
+            object_list = []
+
+        assert "Thermal" in self.solution_type, "This method works only in a Mechanical Thermal analysis."
 
         self.logger.info("Mapping HFSS EM Lossess")
         oName = self.project_name
@@ -222,7 +233,7 @@ class Mechanical(FieldAnalysis3D, object):
         name = generate_unique_name("EMLoss")
         bound = BoundaryObject(self, name, props, "EMLoss")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             self.logger.info("EM losses mapped from design %s.", designname)
             return bound
         return False
@@ -235,7 +246,7 @@ class Mechanical(FieldAnalysis3D, object):
         setupname="Setup1",
         sweepname="SteadyState",
         source_project_name=None,
-        paramlist=[],
+        paramlist=None,
     ):
         """Map thermal losses to a Mechanical design.
 
@@ -250,13 +261,13 @@ class Mechanical(FieldAnalysis3D, object):
             Name of the design with the source mapping. The default is ``"IcepakDesign1"``.
         setupname : str, optional
             Name of the EM setup. The default is ``"Setup1"``.
-        sweepname :str, optional
+        sweepname : str, optional
             Name of the EM sweep to use for the mapping. The default is ``"SteadyState"``.
         source_project_name : str, optional
             Name of the source project. The default is ``None``, in which case the
             source from the same project is used.
         paramlist : list, optional
-            List of all parameters in the EM to map. The default is ``[]``.
+            List of all parameters in the EM to map. The default is ``None``.
 
         Returns
         -------
@@ -268,6 +279,8 @@ class Mechanical(FieldAnalysis3D, object):
 
         >>> oModule.AssignThermalCondition
         """
+        if paramlist is None:
+            paramlist = []
 
         assert self.solution_type == "Structural", "This method works only in a Mechanical Structural analysis."
 
@@ -310,7 +323,7 @@ class Mechanical(FieldAnalysis3D, object):
         name = generate_unique_name("ThermalLink")
         bound = BoundaryObject(self, name, props, "ThermalCondition")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             self.logger.info("Thermal conditions are mapped from design %s.", designname)
             return bound
 
@@ -318,7 +331,12 @@ class Mechanical(FieldAnalysis3D, object):
 
     @pyaedt_function_handler()
     def assign_uniform_convection(
-        self, objects_list, convection_value, convection_unit="w_per_m2kel", temperature="AmbientTemp", boundary_name=""
+        self,
+        objects_list,
+        convection_value=1.0,
+        convection_unit="w_per_m2kel",
+        temperature="AmbientTemp",
+        boundary_name="",
     ):
         """Assign a uniform convection to the face list.
 
@@ -326,8 +344,8 @@ class Mechanical(FieldAnalysis3D, object):
         ----------
         objects_list : list
             List of objects, faces, or both.
-        convection_value : float
-            Convection value.
+        convection_value : float, optional
+            Convection value. The default is ``"1.0"``.
         convection_unit : str, optional
             Units for the convection value. The default is ``"w_per_m2kel"``.
         temperature : str, optional
@@ -346,7 +364,7 @@ class Mechanical(FieldAnalysis3D, object):
 
         >>> oModule.AssignConvection
         """
-        assert self.solution_type == "Thermal", "This method works only in a Mechanical Structural analysis."
+        assert "Thermal" in self.solution_type, "This method works only in a Mechanical Thermal analysis."
 
         props = {}
         objects_list = self.modeler.convert_to_selections(objects_list, True)
@@ -365,7 +383,7 @@ class Mechanical(FieldAnalysis3D, object):
             boundary_name = generate_unique_name("Convection")
         bound = BoundaryObject(self, boundary_name, props, "Convection")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
@@ -395,7 +413,7 @@ class Mechanical(FieldAnalysis3D, object):
 
         >>> oModule.AssignTemperature
         """
-        assert self.solution_type == "Thermal", "This method works only in a Mechanical Structural analysis."
+        assert "Thermal" in self.solution_type, "This method works only in a Mechanical Thermal analysis."
 
         props = {}
         objects_list = self.modeler.convert_to_selections(objects_list, True)
@@ -412,7 +430,7 @@ class Mechanical(FieldAnalysis3D, object):
             boundary_name = generate_unique_name("Temp")
         bound = BoundaryObject(self, boundary_name, props, "Temperature")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
@@ -458,7 +476,7 @@ class Mechanical(FieldAnalysis3D, object):
             boundary_name = generate_unique_name("Temp")
         bound = BoundaryObject(self, boundary_name, props, "Frictionless")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
@@ -500,7 +518,7 @@ class Mechanical(FieldAnalysis3D, object):
             boundary_name = generate_unique_name("Temp")
         bound = BoundaryObject(self, boundary_name, props, "FixedSupport")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
@@ -523,3 +541,150 @@ class Mechanical(FieldAnalysis3D, object):
         for el in setup_list:
             sweep_list.append(el + " : Solution")
         return sweep_list
+
+    @pyaedt_function_handler()
+    def assign_heat_flux(self, objects_list, heat_flux_type, value, boundary_name=""):
+        """Assign heat flux boundary condition to an object or face list.
+
+        Parameters
+        ----------
+        objects_list : list
+            List of objects, faces, or both.
+        heat_flux_type : str
+            Type of the heat flux. Options are ``"Total Power"`` or ``"Surface Flux"``.
+        value : str
+            Value of heat flux with units.
+        boundary_name : str, optional
+            Name of the boundary. The default is ``""``, in which case the default
+            name is used.
+
+        Returns
+        -------
+        :class:`aedt.modules.Boundary.Boundary object`
+            Boundary object.
+
+        References
+        ----------
+
+        >>> oModule.AssignHeatFlux
+        """
+        assert "Thermal" in self.solution_type, "This method works only in a Mechanical Thermal analysis."
+
+        props = {}
+        objects_list = self.modeler.convert_to_selections(objects_list, True)
+        if type(objects_list) is list:
+            if type(objects_list[0]) is str:
+                props["Objects"] = objects_list
+            else:
+                props["Faces"] = objects_list
+
+        if heat_flux_type == "Total Power":
+            props["TotalPower"] = value
+        else:
+            props["SurfaceFlux"] = value
+
+        if not boundary_name:
+            boundary_name = generate_unique_name("HeatFlux")
+
+        bound = BoundaryObject(self, boundary_name, props, "HeatFlux")
+        if bound.create():
+            self._boundaries[bound.name] = bound
+            return bound
+        return False
+
+    @pyaedt_function_handler()
+    def assign_heat_generation(self, objects_list, value, boundary_name=""):
+        """Assign a heat generation boundary condition to an object list.
+
+        Parameters
+        ----------
+        objects_list : list
+            List of objects.
+        value : str
+            Value of heat generation with units.
+        boundary_name : str, optional
+            Name of the boundary. The default is ``""``, in which case the default
+            name is used.
+
+        Returns
+        -------
+        :class:`aedt.modules.Boundary.Boundary object`
+            Boundary object.
+
+        References
+        ----------
+
+        >>> oModule.AssignHeatGeneration
+        """
+        assert "Thermal" in self.solution_type, "This method works only in a Mechanical Thermal analysis."
+
+        props = {}
+        objects_list = self.modeler.convert_to_selections(objects_list, True)
+        if type(objects_list) is list:
+            props["Objects"] = objects_list
+
+        props["TotalPower"] = value
+
+        if not boundary_name:
+            boundary_name = generate_unique_name("HeatGeneration")
+
+        bound = BoundaryObject(self, boundary_name, props, "HeatGeneration")
+        if bound.create():
+            self._boundaries[bound.name] = bound
+            return bound
+        return False
+
+    @pyaedt_function_handler()
+    def create_setup(self, setupname="MySetupAuto", setuptype=None, **kwargs):
+        """Create an analysis setup for Mechanical.
+
+        Optional arguments are passed along with ``setuptype`` and ``setupname``.  Keyword
+        names correspond to the ``setuptype``
+        corresponding to the native AEDT API.  The list of
+        keywords here is not exhaustive.
+
+
+        Parameters
+        ----------
+        setuptype : int, str, optional
+            Type of the setup. Options are  ``"IcepakSteadyState"`` and
+            ``"IcepakTransient"``. The default is ``"IcepakSteadyState"``.
+        setupname : str, optional
+            Name of the setup. The default is ``"Setup1"``.
+        **kwargs : dict, optional
+            Available keys depend on the setup chosen.
+            For more information, see :doc:`../SetupTemplatesMechanical`.
+
+        Returns
+        -------
+        :class:`pyaedt.modules.SolveSetup.SetupHFSS`
+            Solver Setup object.
+
+        References
+        ----------
+
+        >>> oModule.InsertSetup
+
+        Examples
+        --------
+
+        >>> from pyaedt import Mechanical
+        >>> app = Mechanical()
+        >>> app.create_setup(setupname="Setup1", MaxModes=6))
+
+        """
+        if setuptype is None:
+            setuptype = self.design_solutions.default_setup
+        elif setuptype in SetupKeys.SetupNames:
+            setuptype = SetupKeys.SetupNames.index(setuptype)
+        if "props" in kwargs:
+            return self._create_setup(setupname=setupname, setuptype=setuptype, props=kwargs["props"])
+        else:
+            setup = self._create_setup(setupname=setupname, setuptype=setuptype)
+        setup.auto_update = False
+        for arg_name, arg_value in kwargs.items():
+            if setup[arg_name] is not None:
+                setup[arg_name] = arg_value
+        setup.auto_update = True
+        setup.update()
+        return setup

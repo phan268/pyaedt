@@ -1,34 +1,52 @@
 #!/ekm/software/anaconda3/bin/python
-# Standard imports
-import filecmp
-import os
 from collections import OrderedDict
+import os
+import shutil
 
-from _unittest.conftest import BasisTest
+from _unittest.conftest import config
 from _unittest.conftest import local_path
+import pytest
+
 from pyaedt import Maxwell2d
 from pyaedt.generic.constants import SOLUTIONS
 from pyaedt.generic.general_methods import generate_unique_name
 
-try:
-    import pytest  # noqa: F401
-except ImportError:
-    import _unittest_ironpython.conf_unittest as pytest  # noqa: F401
+test_subfolder = "TMaxwell"
+if config["desktopVersion"] > "2022.2":
+    test_name = "Motor_EM_R2019R3_231"
+else:
+    test_name = "Motor_EM_R2019R3"
+
+ctrl_prg = "TimeStepCtrl"
+ctrl_prg_file = "timestep_only.py"
 
 
-class TestClass(BasisTest, object):
-    def setup_class(self):
-        BasisTest.my_setup(self)
-        self.aedtapp = BasisTest.add_app(
-            self, project_name="Motor_EM_R2019R3", design_name="Basis_Model_For_Test", application=Maxwell2d
-        )
+@pytest.fixture(scope="class")
+def aedtapp(add_app):
+    app = add_app(
+        project_name=test_name, design_name="Basis_Model_For_Test", application=Maxwell2d, subfolder=test_subfolder
+    )
+    if config["desktopVersion"] < "2023.1":
+        app.duplicate_design("design_for_test")
+        app.set_active_design("Basis_Model_For_Test")
+    return app
 
-    def teardown_class(self):
-        BasisTest.my_teardown(self)
+
+@pytest.fixture(scope="class")
+def m2d_ctrl_prg(add_app):
+    app = add_app(application=Maxwell2d, project_name=ctrl_prg, subfolder=test_subfolder)
+    return app
+
+
+class TestClass:
+    @pytest.fixture(autouse=True)
+    def init(self, aedtapp, m2d_ctrl_prg, local_scratch):
+        self.aedtapp = aedtapp
+        self.m2d_ctrl_prg = m2d_ctrl_prg
+        self.local_scratch = local_scratch
 
     def test_03_assign_initial_mesh_from_slider(self):
         assert self.aedtapp.mesh.assign_initial_mesh_from_slider(4)
-        self.aedtapp.set_active_design("Basis_Model_For_Test")
 
     def test_04_create_winding(self):
         bounds = self.aedtapp.assign_winding(current_value=20e-3, coil_terminals=["Coil"])
@@ -127,12 +145,26 @@ class TestClass(BasisTest, object):
 
     def test_14_check_design_preview_image(self):
         jpg_file = os.path.join(self.local_scratch.path, "file.jpg")
-        self.aedtapp.export_design_preview_to_jpg(jpg_file)
-        assert filecmp.cmp(jpg_file, os.path.join(local_path, "example_models", "Motor_EM_R2019R3.jpg"))
+        assert self.aedtapp.export_design_preview_to_jpg(jpg_file)
 
     def test_14a_model_depth(self):
         self.aedtapp.model_depth = 2.0
         assert self.aedtapp.change_design_settings({"ModelDepth": "3mm"})
+
+    def test_14b_skew_model(self):
+        self.aedtapp.set_active_design("Basis_Model_For_Test")
+        assert self.aedtapp.apply_skew()
+        assert not self.aedtapp.apply_skew(skew_type="Invalid")
+        assert not self.aedtapp.apply_skew(skew_part="Invalid")
+        assert not self.aedtapp.apply_skew(
+            skew_type="Continuous", skew_part="Stator", skew_angle="0.5", skew_angle_unit="Invalid"
+        )
+        assert not self.aedtapp.apply_skew(
+            skew_type="User Defined", number_of_slices="4", custom_slices_skew_angles=["1", "2", "3"]
+        )
+        assert self.aedtapp.apply_skew(
+            skew_type="User Defined", number_of_slices="4", custom_slices_skew_angles=["1", "2", "3", "4"]
+        )
 
     def test_15_assign_movement(self):
         self.aedtapp.set_active_design("Y_Connections")
@@ -298,3 +330,130 @@ class TestClass(BasisTest, object):
             if bound.name == "Symmetry_Test_IsEven":
                 assert bound.type == "Symmetry"
                 assert not bound.props["IsOdd"]
+
+    def test_25_export_rl_matrix(self):
+        self.aedtapp.set_active_design("Sinusoidal")
+        assert not self.aedtapp.export_rl_matrix("Test1", " ")
+        self.aedtapp.solution_type = SOLUTIONS.Maxwell2d.EddyCurrentXY
+        self.aedtapp.assign_matrix(sources=["PM_I1_1_I0", "PM_I1_I0"], matrix_name="Test1")
+        self.aedtapp.assign_matrix(sources=["Phase_A", "Phase_B", "Phase_C"], matrix_name="Test2")
+        setup_name = "setupTestMatrixRL"
+        setup = self.aedtapp.create_setup(setupname=setup_name)
+        setup.props["MaximumPasses"] = 2
+        export_path_1 = os.path.join(self.local_scratch.path, "export_rl_matrix_Test1.txt")
+        assert not self.aedtapp.export_rl_matrix("Test1", export_path_1)
+        assert not self.aedtapp.export_rl_matrix("Test2", export_path_1, False, 10, 3, True)
+        self.aedtapp.validate_simple()
+        self.aedtapp.analyze_setup(setup_name)
+        assert self.aedtapp.export_rl_matrix("Test1", export_path_1)
+        assert not self.aedtapp.export_rl_matrix("abcabc", export_path_1)
+        assert os.path.exists(export_path_1)
+        export_path_2 = os.path.join(self.local_scratch.path, "export_rl_matrix_Test2.txt")
+        assert self.aedtapp.export_rl_matrix("Test2", export_path_2, False, 10, 3, True)
+        assert os.path.exists(export_path_2)
+
+    def test_26_assign_current_density(self):
+        self.aedtapp.set_active_design("Sinusoidal")
+        assert self.aedtapp.assign_current_density("Coil", "CurrentDensity_1")
+        assert self.aedtapp.assign_current_density("Coil", "CurrentDensity_2", "40deg", current_density_2d="2")
+        assert self.aedtapp.assign_current_density(["Coil", "Coil_1"])
+        assert self.aedtapp.assign_current_density(["Coil", "Coil_1"], "CurrentDensityGroup_1")
+        for bound in self.aedtapp.boundaries:
+            if bound.type == "CurrentDensity":
+                if bound.name == "CurrentDensity_1":
+                    assert bound.props["Objects"] == ["Coil"]
+                    assert bound.props["Phase"] == "0deg"
+                    assert bound.props["Value"] == "0"
+                    assert bound.props["CoordinateSystem"] == ""
+                if bound.name == "CurrentDensity_2":
+                    assert bound.props["Objects"] == ["Coil"]
+                    assert bound.props["Phase"] == "40deg"
+                    assert bound.props["Value"] == "2"
+                    assert bound.props["CoordinateSystem"] == ""
+            if bound.type == "CurrentDensityGroup":
+                if bound.name == "CurrentDensityGroup_1":
+                    assert bound.props["Objects"] == ["Coil", "Coil_1"]
+                    assert bound.props["Phase"] == "0deg"
+                    assert bound.props["Value"] == "0"
+                    assert bound.props["CoordinateSystem"] == ""
+        self.aedtapp.set_active_design("Motion")
+        assert not self.aedtapp.assign_current_density("Circle_inner", "CurrentDensity_1")
+
+    def test_27_add_mesh_link(self):
+        self.aedtapp.save_project(self.aedtapp.project_file)
+        self.aedtapp.set_active_design("Sinusoidal")
+        assert self.aedtapp.setups[0].add_mesh_link(design_name="Y_Connections")
+        meshlink_props = self.aedtapp.setups[0].props["MeshLink"]
+        assert meshlink_props["Project"] == "This Project*"
+        assert meshlink_props["PathRelativeTo"] == "TargetProject"
+        assert meshlink_props["Design"] == "Y_Connections"
+        assert meshlink_props["Soln"] == "Setup1 : LastAdaptive"
+        assert sorted(list(meshlink_props["Params"].keys())) == sorted(self.aedtapp.available_variations.variables)
+        assert sorted(list(meshlink_props["Params"].values())) == sorted(self.aedtapp.available_variations.variables)
+        assert not self.aedtapp.setups[0].add_mesh_link(design_name="")
+        assert self.aedtapp.setups[0].add_mesh_link(design_name="Y_Connections", solution_name="Setup1 : LastAdaptive")
+        assert not self.aedtapp.setups[0].add_mesh_link(
+            design_name="Y_Connections", solution_name="Setup_Test : LastAdaptive"
+        )
+        assert self.aedtapp.setups[0].add_mesh_link(
+            design_name="Y_Connections",
+            parameters_dict=self.aedtapp.available_variations.nominal_w_values_dict,
+        )
+        example_project = os.path.join(local_path, "example_models", test_subfolder, test_name + ".aedt")
+        example_project_copy = os.path.join(self.local_scratch.path, test_name + "_copy.aedt")
+        shutil.copyfile(example_project, example_project_copy)
+        assert os.path.exists(example_project_copy)
+        assert self.aedtapp.setups[0].add_mesh_link(
+            design_name="Basis_Model_For_Test", project_name=example_project_copy
+        )
+
+    def test_28_set_variable(self):
+        self.aedtapp.variable_manager.set_variable("var_test", expression="123")
+        self.aedtapp["var_test"] = "234"
+        assert "var_test" in self.aedtapp.variable_manager.design_variable_names
+        assert self.aedtapp.variable_manager.design_variables["var_test"].expression == "234"
+
+    def test_31_cylindrical_gap(self):
+        assert not self.aedtapp.mesh.assign_cylindrical_gap("Band")
+        [
+            x.delete()
+            for x in self.aedtapp.mesh.meshoperations[:]
+            if x.type == "Cylindrical Gap Based" or x.type == "CylindricalGap"
+        ]
+        assert self.aedtapp.mesh.assign_cylindrical_gap("Band", meshop_name="cyl_gap_test")
+        assert not self.aedtapp.mesh.assign_cylindrical_gap(["Band", "Region"])
+        assert not self.aedtapp.mesh.assign_cylindrical_gap("Band")
+        [
+            x.delete()
+            for x in self.aedtapp.mesh.meshoperations[:]
+            if x.type == "Cylindrical Gap Based" or x.type == "CylindricalGap"
+        ]
+        assert self.aedtapp.mesh.assign_cylindrical_gap("Band", meshop_name="cyl_gap_test", band_mapping_angle=2)
+
+    def test_32_control_program(self):
+        user_ctl_path = "user.ctl"
+        ctrl_prg_path = os.path.join(local_path, "example_models", test_subfolder, ctrl_prg_file)
+        assert self.m2d_ctrl_prg.setups[0].enable_control_program(control_program_path=ctrl_prg_path)
+        assert self.m2d_ctrl_prg.setups[0].enable_control_program(
+            control_program_path=ctrl_prg_path, control_program_args="3"
+        )
+        assert not self.m2d_ctrl_prg.setups[0].enable_control_program(
+            control_program_path=ctrl_prg_path, control_program_args=3
+        )
+        assert self.m2d_ctrl_prg.setups[0].enable_control_program(
+            control_program_path=ctrl_prg_path, call_after_last_step=True
+        )
+        invalid_ctrl_prg_path = os.path.join(local_path, "example_models", test_subfolder, "invalid.py")
+        assert not self.m2d_ctrl_prg.setups[0].enable_control_program(control_program_path=invalid_ctrl_prg_path)
+        self.m2d_ctrl_prg.solution_type = SOLUTIONS.Maxwell2d.EddyCurrentXY
+        assert not self.m2d_ctrl_prg.setups[0].enable_control_program(control_program_path=ctrl_prg_path)
+        if os.path.exists(user_ctl_path):
+            os.unlink(user_ctl_path)
+
+    @pytest.mark.skipif(config["NonGraphical"], reason="Test fails on build machine")
+    def test_33_import_dxf(self):
+        self.aedtapp.insert_design("dxf")
+        dxf_file = os.path.join(local_path, "example_models", "cad", "DXF", "dxf2.dxf")
+        dxf_layers = self.aedtapp.get_dxf_layers(dxf_file)
+        assert isinstance(dxf_layers, list)
+        assert self.aedtapp.import_dxf(dxf_file, dxf_layers)

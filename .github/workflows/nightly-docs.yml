@@ -5,27 +5,24 @@ on:
   schedule:  # UTC at 0400
     - cron:  '0 4 * * *'
 
+env:
+  DOCUMENTATION_CNAME: 'aedt.docs.pyansys.com'
+  MEILISEARCH_API_KEY: ${{ secrets.MEILISEARCH_API_KEY }}
+  MEILISEARCH_PUBLIC_API_KEY: ${{ secrets.MEILISEARCH_PUBLIC_API_KEY }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   docs_build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
-
-      # used for documentation deployment
-      - name: Get Bot Application Token
-        id: get_workflow_token
-        uses: peter-murray/workflow-application-token-action@v1
-        with:
-          application_id: ${{ secrets.BOT_APPLICATION_ID }}
-          application_private_key: ${{ secrets.BOT_APPLICATION_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v2.2.2
+        uses: actions/setup-python@v5
         with:
           python-version: 3.8
 
@@ -35,35 +32,73 @@ jobs:
 
       - name: Install doc build requirements
         run: |
-          pip install -r requirements_docs.txt
+           pip install .[doc]
 
       - name: Full Documentation Build
         run: |
           make -C doc phtml
-          touch doc/_build/html/.nojekyll
-          echo "dev.aedtdocs.pyansys.com" >> doc/_build/html/CNAME
 
-      - name: Upload Documentation
-        uses: actions/upload-artifact@v2.2.3
+      - name: Upload documentation HTML artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: Documentation
+          name: documentation-html
           path: doc/_build/html
           retention-days: 7
 
-      - name: Deploy
-        uses: JamesIves/github-pages-deploy-action@4.1.4
+      - name: Upload HTML documentation artifact
+        uses: actions/upload-artifact@v4
         with:
-          repository-name: pyansys/pyaedt-dev-docs
-          branch: master
-          folder: doc/_build/html/
-          token: ${{ steps.get_workflow_token.outputs.token }}
-          clean: true
+          name: documentation-html-edb
+          path: doc/_build/html/EDBAPI
+          retention-days: 7
+
+  docs_upload:
+    needs: docs_build
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Deploy development documentation
+        uses: ansys/actions/doc-deploy-dev@v5
+        with:
+          cname: ${{ env.DOCUMENTATION_CNAME }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  doc-index-dev:
+    name: "Deploy dev docs index"
+    runs-on: ubuntu-latest
+    needs: docs_upload
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+
+      - name: Display structure of downloaded files
+        run: ls -R
+      
+      - name: "Deploy the dev documentation index for PyAEDT API"
+        uses: ansys/actions/doc-deploy-index@v5
+        with:
+          cname: ${{ env.DOCUMENTATION_CNAME }}/version/dev
+          index-name: pyaedt-vdev
+          host-url: ${{ vars.MEILISEARCH_HOST_URL }}
+          api-key: ${{ env.MEILISEARCH_API_KEY }}
+          pymeilisearchopts: --stop_urls \"EDBAPI\" # Add EDB API as another index to show it in dropdown button
+
+      - name: "Deploy the dev documentation index for EDB API"
+        uses: ansys/actions/doc-deploy-index@v5
+        with:
+          cname: ${{ env.DOCUMENTATION_CNAME }}/version/dev/EDBAPI/
+          index-name: pyedb-vdev
+          host-url: ${{ vars.MEILISEARCH_HOST_URL }}
+          api-key: ${{ env.MEILISEARCH_API_KEY }}
+          doc-artifact-name: documentation-html-edb # Add only EDB API as page in this index.
+          pymeilisearchopts: --port 8001 # serve in another port as 8000 is deafult
 
   # docstring_testing:
   #   runs-on: Windows
 
   #   steps:
-  #     - uses: actions/checkout@v2
+  #     - uses: actions/checkout@v4
 
   #     - name: Setup Python
   #       uses: actions/setup-python@v2
@@ -88,7 +123,7 @@ jobs:
   #     - name: Install testing requirements
   #       run: |
   #         testenv\Scripts\Activate.ps1
-  #         pip install -r requirements_test.txt
+  #         pip install -r requirements/requirements_test.txt
   #         pip install pytest-azurepipelines
 
   #     - name: Docstring testing

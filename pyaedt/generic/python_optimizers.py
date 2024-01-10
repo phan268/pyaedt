@@ -249,6 +249,7 @@ class GeneticAlgorithm(object):
         self.output_dict = {}
         self.pop = []
         self.reference_file = reference_file
+        self.evaluate_val = 1e10
 
     def run(self):
         """Implements the genetic algorithm"""
@@ -258,7 +259,6 @@ class GeneticAlgorithm(object):
         var = np.zeros(self.dim)
 
         for p in range(0, self.population_size):
-
             for i in self.integers[0]:
                 var[i] = np.random.randint(self.var_bound[i][0], self.var_bound[i][1] + 1)
                 solo[i] = var[i].copy()
@@ -269,6 +269,9 @@ class GeneticAlgorithm(object):
             obj = self.sim(var)
             solo[self.dim] = obj
             pop[p] = solo.copy()
+            if self.population_file:
+                # Save Population in CSV
+                np.savetxt(self.population_file, pop, delimiter=",")
 
         # Sort
         pop = pop[pop[:, self.dim].argsort()]
@@ -278,10 +281,6 @@ class GeneticAlgorithm(object):
         t = 1
         counter = 0
         while t <= self.iterate:
-            if self.population_file:
-                # Save Population in CSV
-                np.savetxt(self.population_file, pop, delimiter=",")
-
             if self.progress_bar:
                 self.progress(t, self.iterate, status="GA is running...")
             # Sort
@@ -294,6 +293,12 @@ class GeneticAlgorithm(object):
                     counter = 0
             else:
                 counter += 1
+            if self.best_function < self.goal:
+                break
+            print("\nInfo: Iteration {}".format(t))
+            print("\nInfo: Goal {}".format(self.goal))
+            print("\nInfo: Best Function {}".format(self.best_function))
+            print("\nInfo: Best Variable {}".format(self.best_variable))
 
             # Report
             self.report.append(pop[0, self.dim])
@@ -382,6 +387,9 @@ class GeneticAlgorithm(object):
                 obj = self.sim(ch2)
                 solo[self.dim] = obj
                 pop[k + 1] = solo.copy()
+                if self.population_file:
+                    # Save Population in CSV
+                    np.savetxt(self.population_file, pop, delimiter=",")
 
             t += 1
             if counter > self.stop_iterations or self.best_function == 0:
@@ -424,7 +432,6 @@ class GeneticAlgorithm(object):
                 ofs2[i] = x[i].copy()
 
         if c_type == "two_point":
-
             ran1 = np.random.randint(0, self.dim)
             ran2 = np.random.randint(ran1, self.dim)
 
@@ -433,7 +440,6 @@ class GeneticAlgorithm(object):
                 ofs2[i] = x[i].copy()
 
         if c_type == "uniform":
-
             for i in range(0, self.dim):
                 ran = np.random.random()
                 if ran < 0.5:
@@ -443,7 +449,6 @@ class GeneticAlgorithm(object):
         return np.array([ofs1, ofs2])
 
     def mut(self, x):
-
         for i in self.integers[0]:
             ran = np.random.random()
             if ran < self.prob_mut:
@@ -479,12 +484,11 @@ class GeneticAlgorithm(object):
         return x
 
     def evaluate(self):
-        self.goal = 1e10
         if not self.reference_file:
-            self.goal = self.function(self.temp)
+            self.evaluate_val = self.function(self.temp)
             return True
         else:
-            self.goal = self.function(self.temp, self.reference_file)
+            self.evaluate_val = self.function(self.temp, self.reference_file)
             return True
 
     def sim(self, X):
@@ -500,7 +504,7 @@ class GeneticAlgorithm(object):
                 thread.join()
         else:
             self.evaluate()
-        return self.goal
+        return self.evaluate_val
 
     def progress(self, count, total, status=""):
         bar_len = 50

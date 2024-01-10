@@ -1,10 +1,8 @@
 from pyaedt.application.Analysis import Analysis
-from pyaedt.modeler.Circuit import ModelerMaxwellCircuit
 
 
 class AnalysisMaxwellCircuit(Analysis):
-    """Class for Maxwell Circuit (MaxwellCircuit)
-
+    """Provides the Maxwell Circuit (MaxwellCircuit) interface.
     Maxwell Circuit Editor has no setup, solution, analysis or postprocessor
     It is automatically initialized by Application call (Maxwell Circuit).
     Refer to Application function for inputs definition
@@ -20,7 +18,7 @@ class AnalysisMaxwellCircuit(Analysis):
         Name of the design to select. The default is ``None``, in
         which case an attempt is made to get an active design. If no
         designs are present, an empty design is created.
-    specified_version : str, optional
+    specified_version : str, int, float, optional
         Version of AEDT to use. The default is ``None``. If ``None``,
         the active setup is used or the latest installed version is
         used.
@@ -55,7 +53,6 @@ class AnalysisMaxwellCircuit(Analysis):
         port=0,
         aedt_process_id=None,
     ):
-
         Analysis.__init__(
             self,
             application,
@@ -72,9 +69,18 @@ class AnalysisMaxwellCircuit(Analysis):
             port,
             aedt_process_id,
         )
-        self._modeler = ModelerMaxwellCircuit(self)
+        self._modeler = None
 
     @property
     def modeler(self):
-        """Design oModeler."""
+        """Design oModeler.
+
+        Returns
+        -------
+        :class:`pyaedt.modeler.schematic.ModelerMaxwellCircuit`
+        """
+        if self._modeler is None:
+            from pyaedt.modeler.schematic import ModelerMaxwellCircuit
+
+            self._modeler = ModelerMaxwellCircuit(self)
         return self._modeler

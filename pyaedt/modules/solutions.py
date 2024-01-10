@@ -1,18 +1,23 @@
+from collections import OrderedDict
 import itertools
+import json
+import logging
 import math
 import os
+import shutil
 import sys
 import time
-import warnings
-from collections import OrderedDict
 
 from pyaedt import is_ironpython
 from pyaedt import pyaedt_function_handler
 from pyaedt import settings
+from pyaedt.application.Variables import decompose_variable_value
 from pyaedt.generic.constants import AEDT_UNITS
 from pyaedt.generic.constants import db10
 from pyaedt.generic.constants import db20
+from pyaedt.generic.constants import unit_converter
 from pyaedt.generic.general_methods import check_and_download_folder
+from pyaedt.generic.general_methods import conversion_function
 from pyaedt.generic.general_methods import open_file
 from pyaedt.generic.general_methods import write_csv
 from pyaedt.generic.plot import get_structured_mesh
@@ -21,23 +26,24 @@ from pyaedt.generic.plot import plot_2d_chart
 from pyaedt.generic.plot import plot_3d_chart
 from pyaedt.generic.plot import plot_contour
 from pyaedt.generic.plot import plot_polar_chart
-from pyaedt.modeler.Object3d import FacePrimitive
+from pyaedt.modeler.cad.elements3d import FacePrimitive
 
+np = None
+pd = None
+pv = None
 if not is_ironpython:
     try:
         import numpy as np
     except ImportError:
-        warnings.warn(
-            "The NumPy module is required to run some functionalities of PostProcess.\n"
-            "Install with \n\npip install numpy\n\nRequires CPython."
-        )
+        np = None
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
     try:
         import pyvista as pv
     except ImportError:
-        warnings.warn(
-            "The pyvista module is required to run some functionalities of PostProcess.\n"
-            "Install with \n\npip install pyvista\n\nRequires CPython."
-        )
+        pv = None
 
 
 class SolutionData(object):
@@ -46,7 +52,9 @@ class SolutionData(object):
     def __init__(self, aedtdata):
         self._original_data = aedtdata
         self.number_of_variations = len(aedtdata)
-
+        self._enable_pandas_output = True if settings.enable_pandas_output and pd else False
+        self._expressions = None
+        self._intrinsics = None
         self._nominal_variation = None
         self._nominal_variation = self._original_data[0]
         self.active_expression = self.expressions[0]
@@ -56,7 +64,7 @@ class SolutionData(object):
         self.active_intrinsic = OrderedDict({})
         for k, v in self.intrinsics.items():
             self.active_intrinsic[k] = v[0]
-        if self.intrinsics:
+        if len(self.intrinsics) > 0:
             self._primary_sweep = list(self.intrinsics.keys())[0]
         else:
             self._primary_sweep = self._sweeps_names[0]
@@ -67,8 +75,27 @@ class SolutionData(object):
                 self.units_sweeps[intrinsic] = self.nominal_variation.GetSweepUnits(intrinsic)
             except:
                 self.units_sweeps[intrinsic] = None
-        self._init_solutions_data()
+        self.init_solutions_data()
         self._ifft = None
+
+    @property
+    def enable_pandas_output(self):
+        """
+        Set/Get a flag to use Pandas to export dict and lists. This applies to Solution data output.
+        If ``True`` the property or method will return a pandas object in CPython environment.
+        Default is ``False``.
+
+        Returns
+        -------
+        bool
+        """
+        return True if self._enable_pandas_output and pd else False
+
+    @enable_pandas_output.setter
+    def enable_pandas_output(self, val):
+        if val != self._enable_pandas_output and pd:
+            self._enable_pandas_output = val
+            self.init_solutions_data()
 
     @pyaedt_function_handler()
     def set_active_variation(self, var_id=0):
@@ -86,6 +113,8 @@ class SolutionData(object):
         if var_id < len(self.variations):
             self.active_variation = self.variations[var_id]
             self.nominal_variation = var_id
+            self._expressions = None
+            self._intrinsics = None
             return True
         return False
 
@@ -123,14 +152,15 @@ class SolutionData(object):
 
     @property
     def intrinsics(self):
-        "Get intrinics dictionary on active variation."
-        _sweeps = OrderedDict({})
-        intrinsics = [i for i in self._sweeps_names if i not in self.nominal_variation.GetDesignVariableNames()]
-        for el in intrinsics:
-            values = list(self.nominal_variation.GetSweepValues(el, False))
-            _sweeps[el] = [i for i in values]
-            _sweeps[el] = list(OrderedDict.fromkeys(_sweeps[el]))
-        return _sweeps
+        """Get intrinsics dictionary on active variation."""
+        if not self._intrinsics:
+            self._intrinsics = OrderedDict({})
+            intrinsics = [i for i in self._sweeps_names if i not in self.nominal_variation.GetDesignVariableNames()]
+            for el in intrinsics:
+                values = list(self.nominal_variation.GetSweepValues(el, False))
+                self._intrinsics[el] = [i for i in values]
+                self._intrinsics[el] = list(OrderedDict.fromkeys(self._intrinsics[el]))
+        return self._intrinsics
 
     @property
     def nominal_variation(self):
@@ -163,23 +193,10 @@ class SolutionData(object):
     @property
     def expressions(self):
         """Expressions."""
-        mydata = [i for i in self._nominal_variation.GetDataExpressions()]
-        return list(dict.fromkeys(mydata))
-
-    @pyaedt_function_handler()
-    def _init_solutions_data(self):
-        self._solutions_real = self._solution_data_real()
-        self._solutions_imag = self._solution_data_imag()
-        self._solutions_mag = {}
-        self.units_data = {}
-
-        for expr in self.expressions:
-            self._solutions_mag[expr] = {}
-            self.units_data[expr] = self.nominal_variation.GetDataUnits(expr)
-            for i in self._solutions_real[expr]:
-                self._solutions_mag[expr][i] = abs(
-                    complex(self._solutions_real[expr][i], self._solutions_imag[expr][i])
-                )
+        if not self._expressions:
+            mydata = [i for i in self._nominal_variation.GetDataExpressions()]
+            self._expressions = list(dict.fromkeys(mydata))
+        return self._expressions
 
     @pyaedt_function_handler()
     def update_sweeps(self):
@@ -201,15 +218,17 @@ class SolutionData(object):
     @staticmethod
     @pyaedt_function_handler()
     def _quantity(unit):
-        """
+        """Get the corresponding AEDT units.
 
         Parameters
         ----------
-        unit :
-
+        unit : str
+            The unit to be looked among the available AEDT units.
 
         Returns
         -------
+            str
+            The AEDT units.
 
         """
         for el in AEDT_UNITS:
@@ -219,7 +238,37 @@ class SolutionData(object):
         return None
 
     @pyaedt_function_handler()
-    def _solution_data_real(self):
+    def init_solutions_data(self):
+        """Initialize the database and store info in variables."""
+        self._solutions_real = self._init_solution_data_real()
+        self._solutions_imag = self._init_solution_data_imag()
+        self._solutions_mag = self._init_solution_data_mag()
+        self._solutions_phase = self._init_solution_data_phase()
+
+    @pyaedt_function_handler()
+    def _init_solution_data_mag(self):
+        _solutions_mag = {}
+        self.units_data = {}
+
+        for expr in self.expressions:
+            _solutions_mag[expr] = {}
+            self.units_data[expr] = self.nominal_variation.GetDataUnits(expr)
+            if self.enable_pandas_output:
+                _solutions_mag[expr] = np.sqrt(
+                    self._solutions_real[expr]
+                    .mul(self._solutions_real[expr])
+                    .add(self._solutions_imag[expr].mul(self._solutions_imag[expr]))
+                )
+            else:
+                for i in self._solutions_real[expr]:
+                    _solutions_mag[expr][i] = abs(complex(self._solutions_real[expr][i], self._solutions_imag[expr][i]))
+        if self.enable_pandas_output:
+            return pd.DataFrame.from_dict(_solutions_mag)
+        else:
+            return _solutions_mag
+
+    @pyaedt_function_handler()
+    def _init_solution_data_real(self):
         """ """
         sols_data = {}
 
@@ -238,10 +287,13 @@ class SolutionData(object):
                     solution_Data[tuple(c + list(t))] = solution[i]
                     i += 1
             sols_data[expression] = solution_Data
-        return sols_data
+        if self.enable_pandas_output:
+            return pd.DataFrame.from_dict(sols_data)
+        else:
+            return sols_data
 
     @pyaedt_function_handler()
-    def _solution_data_imag(self):
+    def _init_solution_data_imag(self):
         """ """
         sols_data = {}
 
@@ -262,7 +314,47 @@ class SolutionData(object):
                     solution_Data[tuple(c + list(t))] = solution[i]
                     i += 1
             sols_data[expression] = solution_Data
-        return sols_data
+        if self.enable_pandas_output:
+            return pd.DataFrame.from_dict(sols_data)
+        else:
+            return sols_data
+
+    @pyaedt_function_handler()
+    def _init_solution_data_phase(self):
+        data_phase = {}
+        for expr in self.expressions:
+            data_phase[expr] = {}
+            if self.enable_pandas_output:
+                data_phase[expr] = np.arctan2(self._solutions_imag[expr], self._solutions_real[expr])
+            else:
+                for i in self._solutions_real[expr]:
+                    data_phase[expr][i] = math.atan2(self._solutions_imag[expr][i], self._solutions_real[expr][i])
+        if self.enable_pandas_output:
+            return pd.DataFrame.from_dict(data_phase)
+        else:
+            return data_phase
+
+    @property
+    def full_matrix_real_imag(self):
+        """Get the full available solution data in Real and Imaginary parts.
+
+        Returns
+        -------
+        tuple of dicts
+            (Real Dict, Imag Dict)
+        """
+        return self._solutions_real, self._solutions_imag
+
+    @property
+    def full_matrix_mag_phase(self):
+        """Get the full available solution data magnitude and phase in radians.
+
+        Returns
+        -------
+        tuple of dicts
+            (Mag Dict, Phase Dict).
+        """
+        return self._solutions_mag, self._solutions_phase
 
     @staticmethod
     @pyaedt_function_handler()
@@ -280,7 +372,10 @@ class SolutionData(object):
             List of inputs in degrees.
 
         """
-        return [i * 360 / (2 * math.pi) for i in input_list]
+        if isinstance(input_list, (tuple, list)):
+            return [i * 360 / (2 * math.pi) for i in input_list]
+        else:
+            return input_list * 360 / (2 * math.pi)
 
     @staticmethod
     @pyaedt_function_handler()
@@ -298,7 +393,10 @@ class SolutionData(object):
             List of inputs in radians.
 
         """
-        return [i * 2 * math.pi / 360 for i in input_list]
+        if isinstance(input_list, (tuple, list)):
+            return [i * 2 * math.pi / 360 for i in input_list]
+        else:
+            return input_list * 2 * math.pi / 360
 
     @pyaedt_function_handler()
     def _variation_tuple(self):
@@ -348,6 +446,8 @@ class SolutionData(object):
             sol = self._convert_list_to_SI(
                 sol, self._quantity(self.units_data[expression]), self.units_data[expression]
             )
+        if self.enable_pandas_output:
+            return pd.Series(sol)
         return sol
 
     @staticmethod
@@ -376,33 +476,6 @@ class SolutionData(object):
         return sol
 
     @pyaedt_function_handler()
-    def data_db(self, expression=None, convert_to_SI=False):
-        """Retrieve the data in the database for an expression and convert in db10.
-
-        .. deprecated:: 0.4.8
-           Use :func:`data_db10` instead.
-
-        Parameters
-        ----------
-        expression : str, optional
-            Name of the expression. The default is ``None``,
-            in which case the active expression is used.
-        convert_to_SI : bool, optional
-            Whether to convert the data to the SI unit system.
-            The default is ``False``.
-
-        Returns
-        -------
-        list
-            List of the data in the database for the expression.
-
-        """
-        if not expression:
-            expression = self.active_expression
-
-        return [db10(i) for i in self.data_magnitude(expression, convert_to_SI)]
-
-    @pyaedt_function_handler()
     def data_db10(self, expression=None, convert_to_SI=False):
         """Retrieve the data in the database for an expression and convert in db10.
 
@@ -423,7 +496,8 @@ class SolutionData(object):
         """
         if not expression:
             expression = self.active_expression
-
+        if self.enable_pandas_output:
+            return 10 * np.log10(self.data_magnitude(expression, convert_to_SI))
         return [db10(i) for i in self.data_magnitude(expression, convert_to_SI)]
 
     @pyaedt_function_handler()
@@ -447,7 +521,8 @@ class SolutionData(object):
         """
         if not expression:
             expression = self.active_expression
-
+        if self.enable_pandas_output:
+            return 20 * np.log10(self.data_magnitude(expression, convert_to_SI))
         return [db20(i) for i in self.data_magnitude(expression, convert_to_SI)]
 
     @pyaedt_function_handler()
@@ -474,7 +549,9 @@ class SolutionData(object):
         coefficient = 1
         if not radians:
             coefficient = 180 / math.pi
-        return [coefficient * math.atan(k / i) for i, k in zip(self.data_real(expression), self.data_imag(expression))]
+        if self.enable_pandas_output:
+            return coefficient * np.arctan2(self.data_imag(expression), self.data_real(expression))
+        return [coefficient * math.atan2(k, i) for i, k in zip(self.data_real(expression), self.data_imag(expression))]
 
     @property
     def primary_sweep_values(self):
@@ -486,6 +563,8 @@ class SolutionData(object):
             List of the primary sweep valid points for the expression.
 
         """
+        if self.enable_pandas_output:
+            return pd.Series(self.variation_values(self.primary_sweep))
         return self.variation_values(self.primary_sweep)
 
     @property
@@ -516,6 +595,8 @@ class SolutionData(object):
                 sol.append(sol_dict)
             else:
                 sol.append(None)
+        if self.enable_pandas_output:
+            return pd.Series(sol)
         return sol
 
     @pyaedt_function_handler()
@@ -556,6 +637,8 @@ class SolutionData(object):
             sol = self._convert_list_to_SI(
                 sol, self._quantity(self.units_data[expression]), self.units_data[expression]
             )
+        if self.enable_pandas_output:
+            return pd.Series(sol)
         return sol
 
     @pyaedt_function_handler()
@@ -594,6 +677,8 @@ class SolutionData(object):
             sol = self._convert_list_to_SI(
                 sol, self._quantity(self.units_data[expression]), self.units_data[expression]
             )
+        if self.enable_pandas_output:
+            return pd.Series(sol)
         return sol
 
     @pyaedt_function_handler()
@@ -613,6 +698,8 @@ class SolutionData(object):
         """
         if not expression:
             expression = self.active_expression
+        if self.enable_pandas_output:
+            return True if self._solutions_imag[expression].abs().sum() > 0.0 else False
         for v in list(self._solutions_imag[expression].values()):
             if float(v) != 0.0:
                 return False
@@ -683,7 +770,7 @@ class SolutionData(object):
         size : tuple, optional
             Image size in pixel (width, height).
         show_legend : bool
-            Either to show legend or not.
+            Either to show legend or not. Flag will be ignored if number of curves to plot is greater than 15.
         xlabel : str
             Plot X label.
         ylabel : str
@@ -700,8 +787,8 @@ class SolutionData(object):
         :class:`matplotlib.plt`
             Matplotlib fig object.
         """
-        if is_ironpython:
-            return False  # pragma: no cover
+        if is_ironpython:  # pragma: no cover
+            return False
         if not curves:
             curves = [self.active_expression]
         if isinstance(curves, str):
@@ -735,6 +822,8 @@ class SolutionData(object):
             ylabel = math_formula
         if not title:
             title = "Simulation Results Plot"
+        if len(data_plot) > 15:
+            show_legend = False
         if is_polar:
             return plot_polar_chart(data_plot, size, show_legend, xlabel, ylabel, title, snapshot_path)
         else:
@@ -808,6 +897,13 @@ class SolutionData(object):
                 r.append(self.data_phase(curve, False))
             elif math_formula == "phaserad":
                 r.append(self.data_phase(curve, True))
+        active_sweep = self.active_intrinsic[self.primary_sweep]
+        position = self.variation_values(self.primary_sweep).index(active_sweep)
+        if len(self.variation_values(self.primary_sweep)) > 1:
+            new_r = []
+            for el in r:
+                new_r.append([el[position]])
+            r = new_r
         data_plot = [theta, phi, r]
         if not xlabel:
             xlabel = x_axis
@@ -842,19 +938,27 @@ class SolutionData(object):
         v = self.variation_values(v_axis)
 
         freq = self.variation_values("Freq")
-        vals_real_Ex = [j for j in self._solutions_real[curve_header + "X"].values()]
-        vals_imag_Ex = [j for j in self._solutions_imag[curve_header + "X"].values()]
-        vals_real_Ey = [j for j in self._solutions_real[curve_header + "Y"].values()]
-        vals_imag_Ey = [j for j in self._solutions_imag[curve_header + "Y"].values()]
-        vals_real_Ez = [j for j in self._solutions_real[curve_header + "Z"].values()]
-        vals_imag_Ez = [j for j in self._solutions_imag[curve_header + "Z"].values()]
+        if self.enable_pandas_output:
+            E_realx = np.reshape(self._solutions_real[curve_header + "X"].copy().values, (len(freq), len(v), len(u)))
+            E_imagx = np.reshape(self._solutions_imag[curve_header + "X"].copy().values, (len(freq), len(v), len(u)))
+            E_realy = np.reshape(self._solutions_real[curve_header + "Y"].copy().values, (len(freq), len(v), len(u)))
+            E_imagy = np.reshape(self._solutions_imag[curve_header + "Y"].copy().values, (len(freq), len(v), len(u)))
+            E_realz = np.reshape(self._solutions_real[curve_header + "Z"].copy().values, (len(freq), len(v), len(u)))
+            E_imagz = np.reshape(self._solutions_imag[curve_header + "Z"].copy().values, (len(freq), len(v), len(u)))
+        else:
+            vals_real_Ex = [j for j in self._solutions_real[curve_header + "X"].values()]
+            vals_imag_Ex = [j for j in self._solutions_imag[curve_header + "X"].values()]
+            vals_real_Ey = [j for j in self._solutions_real[curve_header + "Y"].values()]
+            vals_imag_Ey = [j for j in self._solutions_imag[curve_header + "Y"].values()]
+            vals_real_Ez = [j for j in self._solutions_real[curve_header + "Z"].values()]
+            vals_imag_Ez = [j for j in self._solutions_imag[curve_header + "Z"].values()]
 
-        E_realx = np.reshape(vals_real_Ex, (len(freq), len(v), len(u)))
-        E_imagx = np.reshape(vals_imag_Ex, (len(freq), len(v), len(u)))
-        E_realy = np.reshape(vals_real_Ey, (len(freq), len(v), len(u)))
-        E_imagy = np.reshape(vals_imag_Ey, (len(freq), len(v), len(u)))
-        E_realz = np.reshape(vals_real_Ez, (len(freq), len(v), len(u)))
-        E_imagz = np.reshape(vals_imag_Ez, (len(freq), len(v), len(u)))
+            E_realx = np.reshape(vals_real_Ex, (len(freq), len(v), len(u)))
+            E_imagx = np.reshape(vals_imag_Ex, (len(freq), len(v), len(u)))
+            E_realy = np.reshape(vals_real_Ey, (len(freq), len(v), len(u)))
+            E_imagy = np.reshape(vals_imag_Ey, (len(freq), len(v), len(u)))
+            E_realz = np.reshape(vals_real_Ez, (len(freq), len(v), len(u)))
+            E_imagz = np.reshape(vals_imag_Ez, (len(freq), len(v), len(u)))
 
         Temp_E_compx = E_realx + 1j * E_imagx  # Here is the complex FD data matrix, ready for transforming
         Temp_E_compy = E_realy + 1j * E_imagy
@@ -948,7 +1052,6 @@ class SolutionData(object):
             output = os.path.join(csv_dir, name_str + str(frame) + ".csv")
             list_full = [["x", "y", "z", "val"]]
             for i, y in enumerate(y_c_list):
-
                 for j, x in enumerate(x_c_list):
                     y_coord = y + adj_y
                     x_coord = x + adj_x
@@ -972,254 +1075,230 @@ class SolutionData(object):
 
 
 class FfdSolutionData(object):
-    """Class containing Hfss Far Field Solution Data (ffd)."""
+    """Contains information from the far field solution data.
 
-    def __init__(self, app, sphere_name, setup_name, frequencies, variations=None, overwrite=True, taper="flat"):
-        self._app = app
-        self.levels = 64
-        self.all_max = 1
-        self.sphere_name = sphere_name
-        self.setup_name = setup_name
-        if not isinstance(frequencies, list):
-            self.frequencies = [frequencies]
-        else:
-            self.frequencies = frequencies
-        self._frequency = self.frequencies[0]
-        self.variations = variations
-        self.overwrite = overwrite
-        self._all_solutions = self._export_all_ffd()
-        self.ffd_dict = self._all_solutions[0]
-        self.lattice_vectors = self.get_lattice_vectors()
-        self.taper = taper
-        self.data_dict = {}
-        self._init_ffd()
+    Load far field data from the element pattern files.
 
-    @pyaedt_function_handler()
-    def _init_ffd(self):
-        all_ports = list(self.ffd_dict.keys())
-        valid_ffd = True
+    Parameters
+    ----------
+    eep_files : list or str
+        List of element pattern files for each frequency.
+        If the input is string, it is assumed to be a single frequency.
+    frequencies : list, str, int, or float
+        List of frequencies.
+        If the input is not a list, it is assumed to be a single frequency.
 
-        if os.path.exists(self.ffd_dict[all_ports[0]]):
-            with open(self.ffd_dict[all_ports[0]], "r") as reader:
-                theta = [int(i) for i in reader.readline().split()]
-                phi = [int(i) for i in reader.readline().split()]
-            reader.close()
-            for port in self.ffd_dict.keys():
-                if ":" in port:
-                    port = port.split(":")[0]
-                temp_dict = {}
-                theta_range = np.linspace(*theta)
-                phi_range = np.linspace(*phi)
-                if os.path.exists(self.ffd_dict[port]):
-                    eep_txt = np.loadtxt(self.ffd_dict[port], skiprows=4)
-                    Etheta = np.vectorize(complex)(eep_txt[:, 0], eep_txt[:, 1])
-                    Ephi = np.vectorize(complex)(eep_txt[:, 2], eep_txt[:, 3])
-                    # eep=np.column_stack((etheta, ephi))
-                    temp_dict["Theta"] = theta_range
-                    temp_dict["Phi"] = phi_range
-                    temp_dict["rETheta"] = Etheta
-                    temp_dict["rEPhi"] = Ephi
-                    self.data_dict[port] = temp_dict
+    Examples
+    --------
+
+    >>> import pyaedt
+    >>> from pyaedt.modules.solutions import FfdSolutionData
+    >>> app = pyaedt.Hfss(specified_version="2023.2", designname="Antenna")
+    >>> setup_name = "Setup1 : LastAdaptive"
+    >>> frequencies = [77e9]
+    >>> sphere = "3D"
+    >>> data = app.get_antenna_ffd_solution_data(frequencies, setup_name, sphere)
+    >>> eep_files = data.eep_files
+    >>> frequencies = data.frequencies
+    >>> app.release_desktop()
+    >>> farfield_data = FfdSolutionData(frequencies=frequencies, eep_files=eep_files)
+    >>> farfield_data.polar_plot_3d_pyvista(qty_str="rETotal", quantity_format="dB10")
+    """
+
+    def __init__(
+        self,
+        eep_files,
+        frequencies,
+    ):
+        self.logger = logging.getLogger(__name__)
+
+        self._raw_data = {}
+        self.farfield_data = {}
+        self._eep_file_info_list = []
+        self.port_position = {}
+
+        if isinstance(frequencies, (float, str, int)):
+            frequencies = [frequencies]
+        self._freq_index = 0
+        self.frequencies = frequencies
+
+        if isinstance(eep_files, str):
+            eep_files = [eep_files]
+        self.eep_files = eep_files
+
+        if len(self.eep_files) != len(self.frequencies):  # pragma: no cover
+            raise Exception("Number of frequencies are different than the number of EEP files.")
+
+        for eep in eep_files:
+            self._read_eep_files(eep)
+
+        if (
+            not self._eep_file_info_list
+            or not self.port_position
+            or len(self._eep_file_info_list) != len(self.frequencies)
+        ):  # pragma: no cover
+            raise Exception("Wrong farfield file load.")
+
+        self.eep_file_info = self._eep_file_info_list[0]
+        self.all_port_names = list(self.eep_file_info.keys())
+
+        self._phase_offset = [0] * len(self.all_port_names)
+        self._mag_offset = [1] * len(self.all_port_names)
+        self._origin = [0, 0, 0]
+        self._taper = "flat"
+
+        self.model_info = []
+        self._is_array = []
+        self._component_objects = []
+        self._array_dimension = []
+        self._cell_position = []
+        self._lattice_vector = []
+        self.mesh = None
+
+        for eep in eep_files:
+            metadata_file = os.path.join(os.path.dirname(eep), "eep.json")
+            if os.path.exists(metadata_file):
+                with open(metadata_file) as f:
+                    # Load JSON data from file
+                    metadata = json.load(f)
+                self.model_info.append(metadata["model_info"])
+                if "array_dimension" in metadata and "component_objects" in metadata and "cell_position" in metadata:
+                    self._is_array.append(True)
+                    self._component_objects.append(metadata["component_objects"])
+                    self._array_dimension.append(metadata["array_dimension"])
+                    self._cell_position.append(metadata["cell_position"])
+                    self._lattice_vector.append(metadata["lattice_vector"])
                 else:
-                    valid_ffd = False
-            if valid_ffd:
-                # differential area of sphere, based on observation angle
-                self.d_theta = np.abs(theta_range[1] - theta_range[0])
-                self.d_phi = np.abs(phi_range[1] - phi_range[0])
-                self.diff_area = np.radians(self.d_theta) * np.radians(self.d_phi) * np.sin(np.radians(theta_range))
-                self.num_samples = len(temp_dict["rETheta"])
-                self.all_port_names = list(self.data_dict.keys())
-                self.solution_type = "DrivenModal"
-                self.unique_beams = None
-                self.renormalize = False
-                self.renormalize_dB = True
-                self.renorm_value = 1
-        else:
-            valid_ffd = False
-            self._app.logger.info("ERROR: Far Field Files are Missing")
-        self.valid_ffd = valid_ffd
-        self.Ax = float(self.lattice_vectors[0])
-        self.Ay = float(self.lattice_vectors[1])
-        self.Bx = float(self.lattice_vectors[3])
-        self.By = float(self.lattice_vectors[4])
-        self.beamform()
+                    self._is_array.append(False)
+
+        self.port_index = self._get_port_index()
+        if not self._get_port_index:  # pragma: no cover
+            raise Exception("Wrong port index load.")
+        self.__model_units = "meter"
+        self.frequency = self.frequencies[0]
+
+        self.a_min = sys.maxsize
+        self.a_max = 0
+        self.b_min = sys.maxsize
+        self.b_max = 0
+        if self.port_index:
+            for row, col in self.port_index.values():
+                self.a_min = min(self.a_min, row - 1)
+                self.a_max = max(self.a_max, row - 1)
+                self.b_min = min(self.b_min, col - 1)
+                self.b_max = max(self.b_max, col - 1)
 
     @property
     def frequency(self):
-        """Get/set the Active Frequency.
-
-        Returns
-        -------
-        float
-        """
+        """Active frequency."""
         return self._frequency
 
     @frequency.setter
     def frequency(self, val):
         if val in self.frequencies:
-            self._frequency = val
-            self.ffd_dict = self._all_solutions[self.frequencies.index(val)]
-            self._init_ffd()
+            freq_index = self.frequencies.index(val)
+            eep_file_info = self._eep_file_info_list[freq_index]
+            init_flag = self._init_ffd(eep_file_info)
+            if init_flag:
+                self._frequency = val
+                self._freq_index = self.frequencies.index(val)
+                self.eep_file_info = self._eep_file_info_list[self._freq_index]
+                self.farfield_data = self.combine_farfield()
+            else:  # pragma: no cover
+                self.logger.error("Wrong farfield information.")
+        else:  # pragma: no cover
+            self.logger.error("Frequency not available.")
 
-    @staticmethod
-    @pyaedt_function_handler()
-    def get_array_index(port_name):
-        """Get index of a given port.
+    @property
+    def frequency_value(self):
+        """Frequency value in Hz."""
+        if isinstance(self.frequency, str):
+            frequency, units = decompose_variable_value(str(self.frequency))
+            return unit_converter(frequency, "Freq", units, "Hz")
+        else:
+            return float(self.frequency)
 
-        Parameters
-        ----------
-        port_name : str
+    @property
+    def phase_offset(self):
+        """List of additional phase offsets in degrees on each port. This property
+        is useful when an element has more than one port."""
+        return self._phase_offset
 
-        Returns
-        -------
-        list of int
+    @phase_offset.setter
+    def phase_offset(self, phases):
+        if len(phases) != len(self.all_port_names):
+            self.logger.error("Number of phases must be equal to number of ports.")
+        else:
+            self._phase_offset = phases
+            self.farfield_data = self.combine_farfield()
+
+    @property
+    def mag_offset(self):
+        """List of additional magnitudes on each port. This property is
+        useful when an element has more than one port."""
+        return self._mag_offset
+
+    @mag_offset.setter
+    def mag_offset(self, mags):
+        if len(mags) != len(self.all_port_names):
+            self.logger.error("Number of magnitude must be equal to number of ports.")
+        else:
+            self._mag_offset = mags
+            self.farfield_data = self.combine_farfield()
+
+    @property
+    def taper(self):
+        """Taper type.
+
+        Options are:
+
+        - ``"cosine"``
+        - ``"flat"``
+        - ``"hamming"``
+        - ``"triangular"``
+        - ``"uniform"``
         """
-        try:
-            str1 = port_name.split("[", 1)[1].split("]", 1)[0]
-            index_str = [int(i) for i in str1.split(",")]
-        except:
-            return [1, 1]
-        return index_str
+        return self._taper
+
+    @taper.setter
+    def taper(self, val):
+        if val.lower() in ("flat", "uniform", "cosine", "triangular", "hamming"):
+            self._taper = val
+        else:
+            self.logger.error("This taper is not implemented")
+
+    @property
+    def origin(self):
+        """Far field origin in meters."""
+        return self._origin
+
+    @origin.setter
+    def origin(self, vals):
+        if len(vals) != 3:
+            self.logger.error("Origin is wrong.")
+        else:
+            self._origin = vals
+            self.farfield_data = self.combine_farfield()
 
     @pyaedt_function_handler()
-    def array_min_max_values(self):
-        """Array bounding box.
-
-        Returns
-        -------
-        list of float
-        """
-        row_min = 1
-        row_max = 1
-        col_min = 1
-        col_max = 1
-        rows = []
-        cols = []
-        for portstring in self.all_port_names:
-            index_str = self.get_array_index(portstring)
-            rows.append(index_str[1])
-            cols.append(index_str[0])
-
-        row_min = np.min(rows)
-        row_max = np.max(rows)
-        col_min = np.min(cols)
-        col_max = np.max(cols)
-        return [col_min, col_max, row_min, row_max]
-
-    @pyaedt_function_handler()
-    def array_center_and_edge(self):
-        """Find the center and edge of our array, assumes all ports in far field
-        mapping file are active ports.
-
-        Returns
-        -------
-        bool
-        """
-        AMax = 0
-        BMax = 0
-        RMax = 0
-        XMax = 0
-        YMax = 0
-        CenterA = 0
-        CenterB = 0
-        CenterX = 0
-        CenterY = 0
-
-        # collecting all active cells inside the specified region
-        activeCells = []
-
-        for i in range(0, len(self.all_port_names)):
-            index_str = self.get_array_index(self.all_port_names[i])
-            row = index_str[1]
-            col = index_str[0]
-            a = row
-            b = col
-
-            activeCells.append((a, b))  # because ffd is assuming all ffd files are active
-        if len(activeCells) == 0:
-            return
-
-        [a_min, a_max, b_min, b_max] = self.array_min_max_values()
-
-        CenterA = (a_min + a_max) / 2
-        CenterB = (b_min + b_max) / 2
-        CenterX = (CenterA + 0.5) * self.Ax + (CenterB + 0.5) * self.Bx
-        CenterY = (CenterA + 0.5) * self.Ay + (CenterB + 0.5) * self.By
-
-        self.CenterA = CenterA
-        self.CenterB = CenterB
-        self.CenterX = CenterX
-        self.CenterY = CenterY
-        # find the distance from the edge to the center
-        AMax = a_max - a_min
-        BMax = b_max - b_min
-
-        self.AMax = AMax
-        self.BMax = BMax
-        for a, b in activeCells:
-            x = (a + 0.5) * self.Ax + (b + 0.5) * self.Bx
-            y = (a + 0.5) * self.Ay + (b + 0.5) * self.By
-            x_dis = abs(x - CenterX)
-            y_dis = abs(y - CenterY)
-            distance = math.sqrt(x_dis**2 + y_dis**2)
-            XMax = max(XMax, x_dis)
-            YMax = max(YMax, y_dis)
-            RMax = max(RMax, distance)
-
-        self.RMax = RMax
-        self.XMax = XMax
-        self.YMax = YMax
-        self.RMax *= 2
-        self.XMax *= 2
-        self.YMax *= 2
-        return True
-
-    @pyaedt_function_handler()
-    def element_location(self, a, b):
-        """Element location in the array.
-
-        Parameters
-        ----------
-        a : int
-        b : int
-
-        Returns
-        -------
-        list of float
-        """
-        a = int(a)
-        b = int(b)
-
-        x = (a + 0.5) * self.Ax + (b + 0.5) * self.Bx
-        y = (a + 0.5) * self.Ay + (b + 0.5) * self.By
-        x_dis = x - self.CenterX
-        y_dis = y - self.CenterY
-
-        return np.array([x_dis, y_dis, 0])
-
-    @pyaedt_function_handler()
-    def assign_weight(self, a, b, taper="flat"):
+    def _assign_weight(self, a, b):
         """Assign weight to array.
 
         Parameters
         ----------
         a : int
-            Inndex of array, column.
+            Index of array, column.
         b : int
-            Inndex of array, row.
-        taper : string, optional
-            This is the type of taper we want to apply. The default is 'flat'.
-            It can be ``"cosine"``, ``"triangular"``, ``"hamming"`` or ``"flat"``.
+            Index of array, row.
 
         Returns
         -------
         float
-            Weight to applied to specific index of array.
+            Weight applied to specific index of the array.
         """
+        taper = self.taper
 
-        a = int(a)
-        b = int(b)
-        if taper.lower() == "flat":  # Flat
+        if taper.lower() in ("flat", "uniform") or not self._is_array[self._freq_index]:
             return 1
 
         cosinePow = 1
@@ -1228,17 +1307,19 @@ class FfdSolutionData(object):
         edgeTaper = 10 ** ((float(edgeTaper_dB)) / 20)
 
         threshold = 1e-10
-        length_in_direction1 = 0
-        max_length_in_dir1 = 0
-        length_in_direction2 = 0
-        max_length_in_dir2 = 0
-        w1 = w2 = None
 
         # find the distance between current cell and array center in terms of index
-        length_in_direction1 = a - self.CenterA
-        length_in_direction2 = b - self.CenterB
-        max_length_in_dir1 = self.AMax
-        max_length_in_dir2 = self.BMax
+        lattice_vector = self._lattice_vector[self._freq_index]
+        if not lattice_vector or not len(lattice_vector) == 6:
+            return 1
+
+        center_a = (self.a_min + self.a_max) / 2
+        center_b = (self.b_min + self.b_max) / 2
+
+        length_in_direction1 = a - center_a
+        length_in_direction2 = b - center_b
+        max_length_in_dir1 = self.a_max - self.a_min
+        max_length_in_dir2 = self.b_max - self.b_min
 
         if taper.lower() == "cosine":  # Cosine
             if max_length_in_dir1 < threshold:
@@ -1276,270 +1357,1106 @@ class FfdSolutionData(object):
 
         return w1 * w2
 
-    @pyaedt_function_handler()
-    def beamform(self, phi_scan=0, theta_scan=0):
-        """Compute the far field pattern calculated for a specific phi/scan angle requested.
-        This is calculated based on the lattice vector spacing and the embedded element
-        patterns of a ca-ddm or fa-ddm array in HFSS.
-        Calculates phase shifts between array elements in A and B directions,
-        PhaseShiftA and PhaseShiftB, given Wave Vector (k), lattice vectors
-        (Ax, Ay, Bx, By), Scan angles (theta, phi) using formula below
-        Phase Shift A = - (Ax*k*sin(theta)*cos(phi) + Ay*k*sin(theta)*sin(phi))
-        Phase Shift B = - (Bx*k*sin(theta)*cos(phi) + By*k*sin(theta)*sin(phi)).
+    def _phase_shift_steering(self, a, b, theta=0.0, phi=0.0):
+        """Shift element phase for a specific Theta and Phi scan angle in degrees.
+
+        This method calculates phase shifts between array elements in A and B directions given the lattice vector.
 
         Parameters
         ----------
-        phi_scan : int, float
-            Spherical cs for desired scan angle of beam.
-        theta_scan: : int, float
-            Spherical cs for desired scan angle of beam.
+        a : int
+            Index of array, column.
+        b : int
+            Index of array, row.
+        theta : float, optional
+            Theta scan angle in degrees. The default is ``0.0``.
+        phi : float, optional
+            Phi scan angle in degrees. The default is ``0.0``.
+
+        Returns
+        -------
+        float
+            Phase shift in degrees.
+        """
+        c = 299792458
+        k = (2 * math.pi * self.frequency_value) / c
+        a = int(a)
+        b = int(b)
+        theta = np.deg2rad(theta)
+        phi = np.deg2rad(phi)
+
+        lattice_vector = self._lattice_vector[self._freq_index]
+
+        Ax, Ay, Bx, By = [lattice_vector[0], lattice_vector[1], lattice_vector[3], lattice_vector[4]]
+
+        phase_shift_A = -((Ax * k * np.sin(theta) * np.cos(phi)) + (Ay * k * np.sin(theta) * np.sin(phi)))
+
+        phase_shift_B = -((Bx * k * np.sin(theta) * np.cos(phi)) + (By * k * np.sin(theta) * np.sin(phi)))
+
+        phase_shift = a * phase_shift_A + b * phase_shift_B
+
+        return np.rad2deg(phase_shift)
+
+    @pyaedt_function_handler()
+    def combine_farfield(self, phi_scan=0, theta_scan=0):
+        """Compute the far field pattern calculated for a specific phi and theta scan angle requested.
+
+        Parameters
+        ----------
+        phi_scan : float, optional
+            Phi scan angle in degrees. The default is ``0.0``.
+        theta_scan : float, optional
+            Theta scan angle in degrees. The default is ``0.0``.
 
         Returns
         -------
         dict
-            Updated quantities dictionary.
+            Far field data dictionary.
         """
-        num_ports = len(self.all_port_names)
-        self.array_center_and_edge()
-
-        c = 299792458
-        k = (2 * math.pi * self.frequency) / c
-
-        theta_scan = math.radians(theta_scan)
-        phi_scan = math.radians(phi_scan)
-
-        phase_shift_A_rad = -1 * (
-            (self.Ax * k * math.sin(theta_scan) * math.cos(phi_scan))
-            + (self.Ay * k * math.sin(theta_scan) * math.sin(phi_scan))
-        )
-        phase_shift_B_rad = -1 * (
-            (self.Bx * k * math.sin(theta_scan) * math.cos(phi_scan))
-            + (self.By * k * math.sin(theta_scan) * math.sin(phi_scan))
-        )
-
         w_dict = {}
         w_dict_ang = {}
         w_dict_mag = {}
-        array_positions = {}
+        port_positions = {}
+        port_cont = 0
+        initial_port = self.all_port_names[0]
+
+        # Obtain weights for each port
         for port_name in self.all_port_names:
-            index_str = self.get_array_index(port_name)
+            index_str = self.port_index[port_name]
             a = index_str[0] - 1
             b = index_str[1] - 1
-            w_mag = np.round(np.abs(self.assign_weight(a, b, taper=self.taper)), 3)
-            w_ang = a * phase_shift_A_rad + b * phase_shift_B_rad
+            if self._is_array[self._freq_index]:
+                phase_shift = self._phase_shift_steering(a, b, theta_scan, phi_scan)
+                magnitude = self._assign_weight(a=a, b=b)
+            else:
+                phase_shift = 0
+                magnitude = 1
+            w_mag = magnitude * self.mag_offset[port_cont]
+            w_ang = np.deg2rad(self.phase_offset[port_cont] + phase_shift)
             w_dict[port_name] = np.sqrt(w_mag) * np.exp(1j * w_ang)
             w_dict_ang[port_name] = w_ang
             w_dict_mag[port_name] = w_mag
-            array_positions[port_name] = self.element_location(a, b)
+            port_positions[port_name] = self.port_position[port_name]
+            port_cont += 1
 
-        length_of_ff_data = len(self.data_dict[self.all_port_names[0]]["rETheta"])
+        # Combine farfield of each port
+        length_of_ff_data = len(self._raw_data[initial_port]["rETheta"])
+        theta_range = self._raw_data[initial_port]["Theta"]
+        phi_range = self._raw_data[initial_port]["Phi"]
+        Ntheta = len(theta_range)
+        Nphi = len(phi_range)
+        incident_power = 0
+        ph, th = np.meshgrid(self._raw_data[initial_port]["Phi"], self._raw_data[initial_port]["Theta"])
+        ph = np.deg2rad(ph)
+        th = np.deg2rad(th)
+        c = 299792458
+        k = 2 * np.pi * self.frequency_value / c
+        kx_grid = k * np.sin(th) * np.cos(ph)
+        ky_grid = k * np.sin(th) * np.sin(ph)
+        kz_grid = k * np.cos(th)
+        kx_flat = kx_grid.ravel()
+        ky_flat = ky_grid.ravel()
+        kz_flat = kz_grid.ravel()
+        rEphi_fields_sum = np.zeros(length_of_ff_data, dtype=complex)
+        rETheta_fields_sum = np.zeros(length_of_ff_data, dtype=complex)
 
-        rEtheta_fields = np.zeros((num_ports, length_of_ff_data), dtype=complex)
-        rEphi_fields = np.zeros((num_ports, length_of_ff_data), dtype=complex)
-        w = np.zeros((1, num_ports), dtype=complex)
-        # create port mapping
-        for n, port in enumerate(self.all_port_names):
-            re_theta = self.data_dict[port]["rETheta"]  # this is re_theta index of loaded data
-            re_phi = self.data_dict[port]["rEPhi"]  # this is re_ohi index of loaded data
+        # Farfield superposition
+        for _, port in enumerate(self.all_port_names):
+            if port not in w_dict:
+                w_dict[port] = np.sqrt(0) * np.exp(1j * 0)
+            incident_power += w_dict_mag[port]
+            xyz_pos = port_positions[port]
+            array_factor = (
+                np.exp(1j * (xyz_pos[0] * kx_flat + xyz_pos[1] * ky_flat + xyz_pos[2] * kz_flat)) * w_dict[port]
+            )
+            rEphi_fields_sum += array_factor * self._raw_data[port]["rEPhi"]
+            rETheta_fields_sum += array_factor * self._raw_data[port]["rETheta"]
 
-            w[0][n] = w_dict[port]  # build 1xNumPorts array of weights
+        # Farfield origin sift
+        origin = self.origin
+        array_factor = np.exp(-1j * (origin[0] * kx_flat + origin[1] * ky_flat + origin[2] * kz_flat))
+        rETheta_fields_sum = array_factor * rETheta_fields_sum
+        rEphi_fields_sum = array_factor * rEphi_fields_sum
 
-            rEtheta_fields[n] = re_theta
-            rEphi_fields[n] = re_phi
-
-            theta_range = self.data_dict[port]["Theta"]
-            phi_range = self.data_dict[port]["Phi"]
-            Ntheta = len(theta_range)
-            Nphi = len(phi_range)
-
-        rEtheta_fields_sum = np.dot(w, rEtheta_fields)
-        rEtheta_fields_sum = np.reshape(rEtheta_fields_sum, (Ntheta, Nphi))
-
-        rEphi_fields_sum = np.dot(w, rEphi_fields)
+        rEtheta_fields_sum = np.reshape(rETheta_fields_sum, (Ntheta, Nphi))
         rEphi_fields_sum = np.reshape(rEphi_fields_sum, (Ntheta, Nphi))
 
-        self.all_qtys = {}
-        self.all_qtys["rEPhi"] = rEphi_fields_sum
-        self.all_qtys["rETheta"] = rEtheta_fields_sum
-        self.all_qtys["rETotal"] = np.sqrt(
+        farfield_data = OrderedDict()
+        farfield_data["rEPhi"] = rEphi_fields_sum
+        farfield_data["rETheta"] = rEtheta_fields_sum
+        farfield_data["rETotal"] = np.sqrt(
             np.power(np.abs(rEphi_fields_sum), 2) + np.power(np.abs(rEtheta_fields_sum), 2)
         )
-        self.all_qtys["Theta"] = theta_range
-        self.all_qtys["Phi"] = phi_range
-        self.all_qtys["nPhi"] = Nphi
-        self.all_qtys["nTheta"] = Ntheta
-        pin = np.sum(np.power(np.abs(w), 2))
-        self.all_qtys["Pincident"] = pin
-        self._app.logger.info("Incident Power: %s", pin)
-        real_gain = 2 * np.pi * np.abs(np.power(self.all_qtys["rETotal"], 2)) / pin / 377
-        self.all_qtys["RealizedGain"] = real_gain
-        self.all_qtys["RealizedGain_dB"] = 10 * np.log10(real_gain)
-        self.max_gain = np.max(10 * np.log10(real_gain))
-        self.min_gain = np.min(10 * np.log10(real_gain))
-        self._app.logger.info("Peak Realized Gain: %s dB", self.max_gain)
-        self.all_qtys["Element_Location"] = array_positions
+        farfield_data["Theta"] = theta_range
+        farfield_data["Phi"] = phi_range
+        farfield_data["nPhi"] = Nphi
+        farfield_data["nTheta"] = Ntheta
+        farfield_data["Pincident"] = incident_power
+        real_gain = 2 * np.pi * np.abs(np.power(farfield_data["rETotal"], 2)) / incident_power / 377
+        farfield_data["RealizedGain"] = real_gain
+        farfield_data["RealizedGain_Total"] = real_gain
+        farfield_data["RealizedGain_dB"] = 10 * np.log10(real_gain)
+        real_gain = 2 * np.pi * np.abs(np.power(farfield_data["rETheta"], 2)) / incident_power / 377
+        farfield_data["RealizedGain_Theta"] = real_gain
+        real_gain = 2 * np.pi * np.abs(np.power(farfield_data["rEPhi"], 2)) / incident_power / 377
+        farfield_data["RealizedGain_Phi"] = real_gain
+        farfield_data["Element_Location"] = port_positions
+        return farfield_data
 
-        return self.all_qtys
-
+    # fmt: off
     @pyaedt_function_handler()
-    def beamform_2beams(self, phi_scan1=0, theta_scan1=0, phi_scan2=0, theta_scan2=0):
-        """Compute the far field pattern calculated for a specific phi/scan angle requested.
-        This is calculated based on the lattice vector spacing and the embedded element
-        patterns of a ca-ddm or fa-ddm array in HFSS.
+    def plot_farfield_contour(
+            self,
+            farfield_quantity="RealizedGain",
+            phi_scan=0,
+            theta_scan=0,
+            title="RectangularPlot",
+            quantity_format="dB10",
+            export_image_path=None,
+            levels=64,
+            show=True,
+            **kwargs
+    ):
+        # fmt: on
+        """Create a contour plot of a specified quantity.
 
         Parameters
         ----------
-        phi_scan1 : int, float
-            Spherical cs for desired scan angle of beam.
-        theta_scan1: : int, float
-            Spherical cs for desired scan angle of beam.
-        phi_scan2 : int, float
-            Spherical cs for desired scan angle of second beam.
-        theta_scan2 : int, float
-            Spherical cs for desired scan angle of second beam.
+        farfield_quantity : str, optional
+            Far field quantity to plot. The default is ``"RealizedGain"``.
+            Available quantities are: ``"RealizedGain"``, ``"RealizedGain_Phi"``, ``"RealizedGain_Theta"``,
+            ``"rEPhi"``, ``"rETheta"``, and ``"rETotal"``.
+        phi_scan : float, int, optional
+            Phi scan angle in degrees. The default is ``0``.
+        theta_scan : float, int, optional
+            Theta scan angle in degrees. The default is ``0``.
+        title : str, optional
+            Plot title. The default is ``"RectangularPlot"``.
+        quantity_format : str, optional
+            Conversion data function.
+            Available functions are: ``"abs"``, ``"ang"``, ``"dB10"``, ``"dB20"``, ``"deg"``, ``"imag"``, ``"norm"``,
+            and ``"real"``.
+        export_image_path : str, optional
+            Full path for the image file. The default is ``None``, in which case the file is not exported.
+        levels : int, optional
+            Color map levels. The default is ``64``.
+        show : bool, optional
+            Whether to show the plot. The default is ``True``. If ``False``, the Matplotlib
+            instance of the plot is shown.
 
         Returns
         -------
-        dict
-            Updated quantities dictionary.
+        :class:`matplotlib.plt`
+            Whether to show the plotted curve.
+            If ``show=True``, a Matplotlib figure instance of the plot is returned.
+            If ``show=False``, the plotted curve is returned.
+
+        Examples
+        --------
+        >>> import pyaedt
+        >>> app = pyaedt.Hfss(specified_version="2023.2", designname="Antenna")
+        >>> setup_name = "Setup1 : LastAdaptive"
+        >>> frequencies = [77e9]
+        >>> sphere = "3D"
+        >>> data = app.get_antenna_ffd_solution_data(frequencies, setup_name, sphere)
+        >>> data.plot_farfield_contour()
+
         """
-        num_ports = len(self.all_port_names)
-        self.array_center_and_edge()
+        for k in kwargs:
+            if k == "convert_to_db":  # pragma: no cover
+                self.logger.warning("`convert_to_db` is deprecated since v0.7.8. Use `quantity_format` instead.")
+                quantity_format = "dB10" if kwargs["convert_to_db"] else "abs"
+            elif k == "qty_str":  # pragma: no cover
+                self.logger.warning("`qty_str` is deprecated since v0.7.8. Use `farfield_quantity` instead.")
+                farfield_quantity = kwargs["qty_str"]
+            else:  # pragma: no cover
+                msg = "{} not valid.".format(k)
+                self.logger.error(msg)
+                raise TypeError(msg)
 
-        c = 299792458
-        k = (2 * math.pi * self.frequency) / c
+        data = self.combine_farfield(phi_scan, theta_scan)
+        if farfield_quantity not in data:  # pragma: no cover
+            self.logger.error("Far field quantity is not available.")
+            return False
 
-        # ---------------------- METHOD : CalculatePhaseShifts -------------------
-        # Calculates phase shifts between array elements in A and B directions,
-        # PhaseShiftA and PhaseShiftB, given Wave Vector (k), lattice vectors
-        # (Ax, Ay, Bx, By), Scan angles (theta, phi) using formula below
-        # Phase Shift A = - (Ax*k*sin(theta)*cos(phi) + Ay*k*sin(theta)*sin(phi))
-        # Phase Shift B = - (Bx*k*sin(theta)*cos(phi) + By*k*sin(theta)*sin(phi))
-        # ------------------------------------------------------------------------
-
-        theta_scan1 = math.radians(theta_scan1)
-        phi_scan1 = math.radians(phi_scan1)
-
-        theta_scan2 = math.radians(theta_scan2)
-        phi_scan2 = math.radians(phi_scan2)
-
-        phase_shift_A_rad1 = -1 * (
-            (self.Ax * k * math.sin(theta_scan1) * math.cos(phi_scan1))
-            + (self.Ay * k * math.sin(theta_scan1) * math.sin(phi_scan1))
-        )
-        phase_shift_B_rad1 = -1 * (
-            (self.Bx * k * math.sin(theta_scan1) * math.cos(phi_scan1))
-            + (self.By * k * math.sin(theta_scan1) * math.sin(phi_scan1))
-        )
-
-        phase_shift_A_rad2 = -1 * (
-            (self.Ax * k * math.sin(theta_scan2) * math.cos(phi_scan2))
-            + (self.Ay * k * math.sin(theta_scan2) * math.sin(phi_scan2))
-        )
-        phase_shift_B_rad2 = -1 * (
-            (self.Bx * k * math.sin(theta_scan2) * math.cos(phi_scan2))
-            + (self.By * k * math.sin(theta_scan2) * math.sin(phi_scan2))
-        )
-
-        w_dict = {}
-        w_dict_ang = {}
-        w_dict_mag = {}
-        array_positions = {}
-        for port_name in self.all_port_names:
-            index_str = self.get_array_index(port_name)
-            a = index_str[0]
-            b = index_str[1]
-            w_mag1 = np.round(np.abs(self.assign_weight(a, b, taper=self.taper)), 3)
-            w_ang1 = a * phase_shift_A_rad1 + b * phase_shift_B_rad1
-
-            w_mag2 = np.round(np.abs(self.assign_weight(a, b, taper=self.taper)), 3)
-            w_ang2 = a * phase_shift_A_rad2 + b * phase_shift_B_rad2
-
-            w_dict[port_name] = np.sqrt(w_mag1) * np.exp(1j * w_ang1) + np.sqrt(w_mag2) * np.exp(1j * w_ang2)
-            w_dict_ang[port_name] = np.angle(w_dict[port_name])
-            w_dict_mag[port_name] = np.abs(w_dict[port_name])
-
-            array_positions[port_name] = self.element_location(a, b)
-
-        length_of_ff_data = len(self.data_dict[self.all_port_names[0]]["rETheta"])
-        rEtheta_fields = np.zeros((num_ports, length_of_ff_data), dtype=complex)
-        rEphi_fields = np.zeros((num_ports, length_of_ff_data), dtype=complex)
-        w = np.zeros((1, num_ports), dtype=complex)
-        # create port mapping
-        for n, port in enumerate(self.all_port_names):
-            re_theta = self.data_dict[port]["rETheta"]  # this is re_theta index of loaded data
-            re_phi = self.data_dict[port]["rEPhi"]  # this is re_ohi index of loaded data
-
-            w[0][n] = w_dict[port]  # build 1xNumPorts array of weights
-
-            rEtheta_fields[n] = re_theta
-            rEphi_fields[n] = re_phi
-
-            theta_range = self.data_dict[port]["Theta"]
-            phi_range = self.data_dict[port]["Phi"]
-            Ntheta = len(theta_range)
-            Nphi = len(phi_range)
-
-        rEtheta_fields_sum = np.dot(w, rEtheta_fields)
-        rEtheta_fields_sum = np.reshape(rEtheta_fields_sum, (Ntheta, Nphi))
-
-        rEphi_fields_sum = np.dot(w, rEphi_fields)
-        rEphi_fields_sum = np.reshape(rEphi_fields_sum, (Ntheta, Nphi))
-
-        self.all_qtys = {}
-        self.all_qtys["rEPhi"] = rEphi_fields_sum
-        self.all_qtys["rETheta"] = rEtheta_fields_sum
-        self.all_qtys["rETotal"] = np.sqrt(
-            np.power(np.abs(rEphi_fields_sum), 2) + np.power(np.abs(rEtheta_fields_sum), 2)
-        )
-        self.all_qtys["Theta"] = theta_range
-        self.all_qtys["Phi"] = phi_range
-        self.all_qtys["nPhi"] = Nphi
-        self.all_qtys["nTheta"] = Ntheta
-        pin = np.sum(np.power(np.abs(w), 2))
-        self.all_qtys["Pincident"] = pin
-        self._app.logger.info("Incident Power: %s", pin)
-        real_gain = 2 * np.pi * np.abs(np.power(self.all_qtys["rETotal"], 2)) / pin / 377
-        self.all_qtys["RealizedGain"] = real_gain
-        self.all_qtys["RealizedGain_dB"] = 10 * np.log10(real_gain)
-        self.max_gain = np.max(10 * np.log10(real_gain))
-        self.min_gain = np.min(10 * np.log10(real_gain))
-        self._app.logger.info("Peak Realized Gain: %s dB", self.max_gain)
-        self.all_qtys["Element_Location"] = array_positions
-
-        return self.all_qtys
-
-    @pyaedt_function_handler()
-    def _get_far_field_mesh(self, qty_str="RealizedGain", convert_to_db=True):
-        if convert_to_db:
-            ff_data = 10 * np.log10(self.all_qtys[qty_str])
-
+        data_to_plot = data[farfield_quantity]
+        data_to_plot = conversion_function(data_to_plot, quantity_format)
+        if not isinstance(data_to_plot, np.ndarray):  # pragma: no cover
+            self.logger.error("Wrong format quantity")
+            return False
+        data_to_plot = np.reshape(data_to_plot, (data["nTheta"], data["nPhi"]))
+        th, ph = np.meshgrid(data["Theta"], data["Phi"])
+        if show:
+            return plot_contour(
+                x=th,
+                y=ph,
+                qty_to_plot=data_to_plot,
+                xlabel="Theta (degree)",
+                ylabel="Phi (degree)",
+                title=title,
+                levels=levels,
+                snapshot_path=export_image_path,
+            )
         else:
-            ff_data = self.all_qtys[qty_str]
-        theta = np.deg2rad(np.array(self.all_qtys["Theta"]))
-        phi = np.deg2rad(np.array(self.all_qtys["Phi"]))
-        self.mesh = get_structured_mesh(theta=theta, phi=phi, ff_data=ff_data)
+            return data_to_plot
 
+    # fmt: off
     @pyaedt_function_handler()
-    def get_lattice_vectors(self):
-        """Compute Lattice vectors for Antenna Arrays or return default array in case of simple antenna analysis.
+    def plot_2d_cut(
+            self,
+            farfield_quantity="RealizedGain",
+            primary_sweep="phi",
+            secondary_sweep_value=0,
+            phi_scan=0,
+            theta_scan=0,
+            title="Far Field Cut",
+            quantity_format="dB10",
+            export_image_path=None,
+            show=True,
+            is_polar=False,
+            **kwargs
+    ):
+        # fmt: on
+        """Create a 2D plot of a specified quantity in Matplotlib.
+
+        Parameters
+        ----------
+        farfield_quantity : str, optional
+            Quantity to plot. The default is ``"RealizedGain"``.
+            Available quantities are: ``"RealizedGain"``, ``"RealizedGain_Theta"``, ``"RealizedGain_Phi"``,
+            ``"rETotal"``, ``"rETheta"``, and ``"rEPhi"``.
+        primary_sweep : str, optional.
+            X axis variable. The default is ``"phi"``. Options are ``"phi"`` and ``"theta"``.
+        secondary_sweep_value : float, list, string, optional
+            List of cuts on the secondary sweep to plot. The default is ``0``. Options are
+            `"all"`, a single value float, or a list of float values.
+        phi_scan : float, int, optional
+            Phi scan angle in degrees. The default is ``0``.
+        theta_scan : float, int, optional
+            Theta scan angle in degrees. The default is ``0``.
+        title : str, optional
+            Plot title. The default is ``"RectangularPlot"``.
+        quantity_format : str, optional
+            Conversion data function.
+            Available functions are: ``"abs"``, ``"ang"``, ``"dB10"``, ``"dB20"``, ``"deg"``, ``"imag"``, ``"norm"``,
+            and ``"real"``.
+        export_image_path : str, optional
+            Full path for the image file. The default is ``None``, in which case an image in not exported.
+        show : bool, optional
+            Whether to show the plot. The default is ``True``.
+            If ``False``, the Matplotlib instance of the plot is shown.
+        is_polar : bool, optional
+            Whether this plot is a polar plot. The default is ``True``.
 
         Returns
         -------
-        list of float
-        """
-        try:
-            lattice_vectors = self._app.omodelsetup.GetLatticeVectors()
-            lattice_vectors = [
-                float(vec) * AEDT_UNITS["Length"][self._app.modeler.model_units] for vec in lattice_vectors
-            ]
+        :class:`matplotlib.plt`
+            Whether to show the plotted curve.
+            If ``show=True``, a Matplotlib figure instance of the plot is returned.
+            If ``show=False``, the plotted curve is returned.
 
-        except:
-            lattice_vectors = [0, 0, 0, 0, 1, 0]
-        return lattice_vectors
+
+        Examples
+        --------
+        >>> import pyaedt
+        >>> app = pyaedt.Hfss(specified_version="2023.2", designname="Antenna")
+        >>> setup_name = "Setup1 : LastAdaptive"
+        >>> frequencies = [77e9]
+        >>> sphere = "3D"
+        >>> data = app.get_antenna_ffd_solution_data(frequencies, setup_name, sphere)
+        >>> data.plot_2d_cut(theta_scan=20)
+
+        """
+
+        for k in kwargs:
+            if k == "convert_to_db":  # pragma: no cover
+                self.logger.warning("`convert_to_db` is deprecated since v0.7.8. Use `quantity_format` instead.")
+                quantity_format = "dB10" if kwargs["convert_to_db"] else "abs"
+            elif k == "qty_str":  # pragma: no cover
+                self.logger.warning("`qty_str` is deprecated since v0.7.8. Use `farfield_quantity` instead.")
+                farfield_quantity = kwargs["qty_str"]
+            else:  # pragma: no cover
+                msg = "{} not valid.".format(k)
+                self.logger.error(msg)
+                raise TypeError(msg)
+
+        data = self.combine_farfield(phi_scan, theta_scan)
+        if farfield_quantity not in data:  # pragma: no cover
+            self.logger.error("Far field quantity not available")
+            return False
+
+        data_to_plot = data[farfield_quantity]
+
+        curves = []
+        if primary_sweep == "phi":
+            x_key, y_key = "Phi", "Theta"
+            temp = data_to_plot
+        else:
+            y_key, x_key = "Phi", "Theta"
+            temp = data_to_plot.T
+        x = data[x_key]
+        if is_polar:
+            x = [i * 2 * math.pi / 360 for i in x]
+        if secondary_sweep_value == "all":
+            for el in data[y_key]:
+                idx = self._find_nearest(data[y_key], el)
+                y = temp[idx]
+                y = conversion_function(y, quantity_format)
+                if not isinstance(y, np.ndarray):  # pragma: no cover
+                    self.logger.error("Format of quantity is wrong.")
+                    return False
+                curves.append([x, y, "{}={}".format(y_key, el)])
+        elif isinstance(secondary_sweep_value, list):
+            list_inserted = []
+            for el in secondary_sweep_value:
+                theta_idx = self._find_nearest(data[y_key], el)
+                if theta_idx not in list_inserted:
+                    y = temp[theta_idx]
+                    y = conversion_function(y, quantity_format)
+                    if not isinstance(y, np.ndarray):  # pragma: no cover
+                        self.logger.error("Format of quantity is wrong.")
+                        return False
+                    curves.append([x, y, "{}={}".format(y_key, el)])
+                    list_inserted.append(theta_idx)
+        else:
+            theta_idx = self._find_nearest(data[y_key], secondary_sweep_value)
+            y = temp[theta_idx]
+            y = conversion_function(y, quantity_format)
+            if not isinstance(y, np.ndarray):  # pragma: no cover
+                self.logger.error("Wrong format quantity")
+                return False
+            curves.append([x, y, "{}={}".format(y_key, data[y_key][theta_idx])])
+
+        if show:
+            show_legend = True
+            if len(curves) > 15:
+                show_legend = False
+            if is_polar:
+                return plot_polar_chart(
+                    curves,
+                    xlabel=x_key,
+                    ylabel=farfield_quantity,
+                    title=title,
+                    snapshot_path=export_image_path,
+                    show_legend=show_legend,
+                )
+            else:
+                return plot_2d_chart(
+                    curves,
+                    xlabel=x_key,
+                    ylabel=farfield_quantity,
+                    title=title,
+                    snapshot_path=export_image_path,
+                    show_legend=show_legend,
+                )
+        else:
+            return curves
+
+    # fmt: off
+    @pyaedt_function_handler()
+    def polar_plot_3d(
+            self,
+            farfield_quantity="RealizedGain",
+            phi_scan=0,
+            theta_scan=0,
+            title="3D Plot",
+            quantity_format="dB10",
+            export_image_path=None,
+            show=True,
+            **kwargs
+    ):
+        # fmt: on
+        """Create a 3D plot of a specified quantity.
+
+        Parameters
+        ----------
+        farfield_quantity : str, optional
+            Far field quantity to plot. The default is ``"RealizedGain"``.
+            Available quantities are: ``"RealizedGain"``, ``"RealizedGain_Phi"``, ``"RealizedGain_Theta"``,
+            ``"rEPhi"``, ``"rETheta"``, and ``"rETotal"``.
+        phi_scan : float, int, optional
+            Phi scan angle in degree. The default is ``0``.
+        theta_scan : float, int, optional
+            Theta scan angle in degree. The default is ``0``.
+        title : str, optional
+            Plot title. The default is ``"3D Plot"``.
+        quantity_format : str, optional
+            Conversion data function.
+            Available functions are: ``"abs"``, ``"ang"``, ``"dB10"``, ``"dB20"``, ``"deg"``, ``"imag"``, ``"norm"``,
+            and ``"real"``.
+        export_image_path : str, optional
+            Full path for the image file. The default is ``None``, in which case a file is not exported.
+        show : bool, optional
+            Whether to show the plot. The default is ``True``.
+            If ``False``, the Matplotlib instance of the plot is shown.
+
+        Returns
+        -------
+        :class:`matplotlib.plt`
+            Whether to show the plotted curve.
+            If ``show=True``, a Matplotlib figure instance of the plot is returned.
+            If ``show=False``, the plotted curve is returned.
+
+        Examples
+        --------
+        >>> import pyaedt
+        >>> app = pyaedt.Hfss(specified_version="2023.2", designname="Antenna")
+        >>> setup_name = "Setup1 : LastAdaptive"
+        >>> frequencies = [77e9]
+        >>> sphere = "3D"
+        >>> data = app.get_antenna_ffd_solution_data(frequencies, setup_name, sphere)
+        >>> data.polar_plot_3d(theta_scan=10)
+
+        """
+        for k in kwargs:
+            if k == "convert_to_db":  # pragma: no cover
+                self.logger.warning("`convert_to_db` is deprecated since v0.7.8. Use `quantity_format` instead.")
+                quantity_format = "dB10" if kwargs["convert_to_db"] else "abs"
+            elif k == "qty_str":  # pragma: no cover
+                self.logger.warning("`qty_str` is deprecated since v0.7.8. Use `farfield_quantity` instead.")
+                farfield_quantity = kwargs["qty_str"]
+            else:  # pragma: no cover
+                msg = "{} not valid.".format(k)
+                self.logger.error(msg)
+                raise TypeError(msg)
+
+        data = self.combine_farfield(phi_scan, theta_scan)
+        if farfield_quantity not in data:  # pragma: no cover
+            self.logger.error("Far field quantity is not available.")
+            return False
+
+        ff_data = conversion_function(data[farfield_quantity], quantity_format)
+        if not isinstance(ff_data, np.ndarray):  # pragma: no cover
+            self.logger.error("Format of the quantity is wrong.")
+            return False
+
+        # renormalize to 0 and 1
+        ff_max = np.max(ff_data)
+        ff_min = np.min(ff_data)
+        ff_data_renorm = (ff_data - ff_max) / (ff_max - ff_min)
+
+        theta = np.deg2rad(np.array(data["Theta"]))
+        phi = np.deg2rad(np.array(data["Phi"]))
+        phi_grid, theta_grid = np.meshgrid(phi, theta)
+        r = np.reshape(ff_data_renorm, (len(data["Theta"]), len(data["Phi"])))
+
+        x = r * np.sin(theta_grid) * np.cos(phi_grid)
+        y = r * np.sin(theta_grid) * np.sin(phi_grid)
+        z = r * np.cos(theta_grid)
+        if show:
+            plot_3d_chart([x, y, z], xlabel="Theta", ylabel="Phi", title=title, snapshot_path=export_image_path)
+        else:
+            return x, y, z
+
+    # fmt: off
+    @pyaedt_function_handler()
+    def polar_plot_3d_pyvista(
+            self,
+            farfield_quantity="RealizedGain",
+            quantity_format="dB10",
+            rotation=None,
+            export_image_path=None,
+            show=True,
+            show_as_standalone=False,
+            pyvista_object=None,
+            background=None,
+            scale_farfield=None,
+            show_beam_slider=True,
+            show_geometry=True,
+            **kwargs
+    ):
+        # fmt: on
+        """Create a 3D polar plot of the geometry with a radiation pattern in PyVista.
+
+        Parameters
+        ----------
+        farfield_quantity : str, optional
+            Quantity to plot. The default is ``"RealizedGain"``.
+            Available quantities are: ``"RealizedGain"``, ``"RealizedGain_Theta"``, ``"RealizedGain_Phi"``,
+            ``"rETotal"``, ``"rETheta"``, and ``"rEPhi"``.
+        quantity_format : str, optional
+            Conversion data function.
+            Available functions are: ``"abs"``, ``"ang"``, ``"dB10"``, ``"dB20"``, ``"deg"``, ``"imag"``, ``"norm"``,
+            and ``"real"``.
+        export_image_path : str, optional
+            Full path for the image file. The default is ``None``, in which case a file is not exported.
+        rotation : list, optional
+            Far field rotation matrix. The matrix contains three vectors, around x, y, and z axes.
+            The default is ``[[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]``.
+        show : bool, optional
+            Whether to show the plot. The default is ``True``.
+        show_as_standalone : bool, optional
+            Whether to show a plot as standalone. The default is ``True``.
+        pyvista_object : :class:`Pyvista.Plotter`, optional
+            PyVista instance defined externally. The default is ``None``.
+        background : list or str, optional
+            Background color if a list is passed or background picture if a string is passed.
+            The default is ``None``.
+        scale_farfield : list, optional
+            List with minimum and maximum values of the scale slider. The default is
+            ``None``.
+        show_beam_slider : bool, optional
+            Whether the Theta and Phi scan slider is active. The default is ``True``.
+        show_geometry :
+            Whether to show the geometry. The default is ``True``.
+
+        Returns
+        -------
+        bool or :class:`Pyvista.Plotter`
+            ``True`` when successful. The :class:`Pyvista.Plotter` is returned when ``show`` and
+            ``export_image_path`` are ``False``.
+
+        Examples
+        --------
+        >>> import pyaedt
+        >>> app = pyaedt.Hfss(specified_version="2023.2", designname="Antenna")
+        >>> setup_name = "Setup1 : LastAdaptive"
+        >>> frequencies = [77e9]
+        >>> sphere = "3D"
+        >>> data = app.get_antenna_ffd_solution_data(frequencies, setup_name, sphere)
+        >>> data.polar_plot_3d_pyvista(qty_str="RealizedGain", quantity_format="dB10")
+
+        """
+        for k in kwargs:
+            if k == "convert_to_db":  # pragma: no cover
+                self.logger.warning("`convert_to_db` is deprecated since v0.7.8. Use `quantity_format` instead.")
+                quantity_format = "dB10" if kwargs["convert_to_db"] else "abs"
+            elif k == "qty_str":  # pragma: no cover
+                self.logger.warning("`qty_str` is deprecated since v0.7.8. Use `farfield_quantity` instead.")
+                farfield_quantity = kwargs["qty_str"]
+            else:  # pragma: no cover
+                msg = "{} not valid.".format(k)
+                self.logger.error(msg)
+                raise TypeError(msg)
+
+        if not rotation:
+            rotation = np.eye(3)
+        elif isinstance(rotation, (list, tuple)):  # pragma: no cover
+            rotation = np.array(rotation)
+        text_color = "white"
+        if background is None:
+            background = [255, 255, 255]
+            text_color = "black"
+
+        farfield_data = self.combine_farfield(phi_scan=0, theta_scan=0)
+        if farfield_quantity not in farfield_data:  # pragma: no cover
+            self.logger.error("Far field quantity is not available.")
+            return False
+
+        self.farfield_data = farfield_data
+
+        self.mesh = self.get_far_field_mesh(farfield_quantity=farfield_quantity, quantity_format=quantity_format)
+
+        rotation_euler = self._rotation_to_euler_angles(rotation) * 180 / np.pi
+
+        if not export_image_path and not show:
+            off_screen = False
+        else:
+            off_screen = not show
+
+        if not pyvista_object:
+            if show_as_standalone:
+                p = pv.Plotter(notebook=False, off_screen=off_screen)
+            else:
+                p = pv.Plotter(notebook=is_notebook(), off_screen=off_screen)
+        else:  # pragma: no cover
+            p = pyvista_object
+
+        uf = UpdateBeamForm(self, farfield_quantity, quantity_format)
+
+        default_background = [255, 255, 255]
+        axes_color = [i / 255 for i in default_background]
+
+        if isinstance(background, list):
+            background_color = [i / 255 for i in background]
+            p.background_color = background_color
+            axes_color = [0 if i >= 128 else 255 for i in background]
+        elif isinstance(background, str):  # pragma: no cover
+            p.add_background_image(background, scale=2.5)
+
+        if show_beam_slider and self._is_array[self._freq_index]:
+            p.add_slider_widget(
+                uf.update_phi,
+                rng=[0, 360],
+                value=0,
+                title="Phi",
+                pointa=(0.55, 0.1),
+                pointb=(0.74, 0.1),
+                style="modern",
+                event_type="always",
+                title_height=0.02,
+                color=axes_color,
+            )
+            p.add_slider_widget(
+                uf.update_theta,
+                rng=[-180, 180],
+                value=0,
+                title="Theta",
+                pointa=(0.77, 0.1),
+                pointb=(0.98, 0.1),
+                style="modern",
+                event_type="always",
+                title_height=0.02,
+                color=axes_color,
+            )
+
+        sargs = dict(
+            title_font_size=12,
+            label_font_size=12,
+            shadow=True,
+            n_labels=7,
+            italic=True,
+            fmt="%.1f",
+            font_family="arial",
+            vertical=True,
+            position_x=0.05,
+            position_y=0.65,
+            height=0.3,
+            width=0.06,
+            color=axes_color,
+            title=None,
+            outline=False,
+        )
+
+        cad_mesh = self._get_geometry()
+        data = conversion_function(self.farfield_data[farfield_quantity], function_str=quantity_format)
+        if not isinstance(data, np.ndarray):  # pragma: no cover
+            self.logger.error("Wrong format quantity")
+            return False
+        max_data = np.max(data)
+        min_data = np.min(data)
+        ff_mesh_inst = p.add_mesh(uf.output, cmap="jet", clim=[min_data, max_data], scalar_bar_args=sargs)
+
+        if cad_mesh:
+
+            def toggle_vis_ff(flag):
+                ff_mesh_inst.SetVisibility(flag)
+
+            def toggle_vis_cad(flag):
+                for i in cad:
+                    i.SetVisibility(flag)
+
+            def scale(value=1):
+                ff_mesh_inst.SetScale(value, value, value)
+                sf = AEDT_UNITS["Length"][self.__model_units]
+                ff_mesh_inst.SetPosition(np.divide(self.origin, sf))
+                ff_mesh_inst.SetOrientation(rotation_euler)
+
+            p.add_checkbox_button_widget(toggle_vis_ff, value=True, size=30)
+            p.add_text("Show Far Fields", position=(70, 25), color=text_color, font_size=10)
+            if not scale_farfield:
+                if self._is_array[self._freq_index]:
+                    slider_max = int(
+                        np.ceil(np.abs(np.max(self._array_dimension[self._freq_index]) / np.min(np.abs(p.bounds))))
+                    )
+                else:  # pragma: no cover
+                    slider_max = int(np.ceil((np.max(p.bounds) / 2 / np.min(np.abs(p.bounds)))))
+                slider_min = 0
+            else:
+                slider_max = scale_farfield[1]
+                slider_min = scale_farfield[0]
+            value = slider_max / 3
+
+            p.add_slider_widget(
+                scale,
+                [slider_min, slider_max],
+                title="Scale Plot",
+                value=value,
+                pointa=(0.7, 0.93),
+                pointb=(0.99, 0.93),
+                style="modern",
+                title_height=0.02,
+                color=axes_color,
+            )
+
+            cad = []
+            for cm in cad_mesh:
+                cad.append(p.add_mesh(cm[0], color=cm[1], show_scalar_bar=False, opacity=cm[2]))
+
+            if not show_geometry:
+                p.add_checkbox_button_widget(toggle_vis_cad, value=False, position=(10, 70), size=30)
+                toggle_vis_cad(False)
+            else:
+                p.add_checkbox_button_widget(toggle_vis_cad, value=True, position=(10, 70), size=30)
+
+            p.add_text("Show Geometry", position=(70, 75), color=text_color, font_size=10)
+
+        if export_image_path:
+            p.show(screenshot=export_image_path)
+            return True
+        elif show:  # pragma: no cover
+            p.show()
+            return True
+        return p
+
+    @pyaedt_function_handler()
+    def _init_ffd(self, eep_file_info):
+        """Load far field information.
+
+        Parameters
+        ----------
+        eep_file_info : dict
+            Information about the far fields imported.
+            The keys of the dictionary represent the port names.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+        """
+        all_ports = self.all_port_names
+        valid_ffd = True
+
+        if os.path.exists(eep_file_info[all_ports[0]][0]):
+            with open(eep_file_info[all_ports[0]][0], "r") as reader:
+                theta = [int(i) for i in reader.readline().split()]
+                phi = [int(i) for i in reader.readline().split()]
+            reader.close()
+            for port in eep_file_info.keys():
+                temp_dict = {}
+                if ":" in port:
+                    port = port.split(":")[0]
+                theta_range = np.linspace(*theta)
+                phi_range = np.linspace(*phi)
+                if os.path.exists(eep_file_info[port][0]):
+                    eep_txt = np.loadtxt(eep_file_info[port][0], skiprows=4)
+                    Etheta = np.vectorize(complex)(eep_txt[:, 0], eep_txt[:, 1])
+                    Ephi = np.vectorize(complex)(eep_txt[:, 2], eep_txt[:, 3])
+                    temp_dict["Theta"] = theta_range
+                    temp_dict["Phi"] = phi_range
+                    temp_dict["rETheta"] = Etheta
+                    temp_dict["rEPhi"] = Ephi
+                    self._raw_data[port] = temp_dict
+                else:
+                    valid_ffd = False
+        else:
+            self.logger.error("Wrong far fields were imported.")
+            return False
+
+        if not valid_ffd:
+            return False
+
+        return True
+
+    @pyaedt_function_handler()
+    def get_far_field_mesh(self, farfield_quantity="RealizedGain", quantity_format="dB10", **kwargs):
+        """Generate a PyVista ``UnstructuredGrid`` object that represents the far field mesh.
+
+        Parameters
+        ----------
+        farfield_quantity : str, optional
+            Far field quantity to plot. The default is ``"RealizedGain"``.
+            Available quantities are: ``"RealizedGain"``, ``"RealizedGain_Phi"``, ``"RealizedGain_Theta"``,
+            ``"rEPhi"``, ``"rETheta"``, and ``"rETotal"``.
+        quantity_format : str, optional
+            Conversion data function.
+            Available functions are: ``"abs"``, ``"ang"``, ``"dB10"``, ``"dB20"``, ``"deg"``, ``"imag"``, ``"norm"``,
+            and ``"real"``.
+
+        Returns
+        -------
+        :class:`Pyvista.Plotter`
+            ``UnstructuredGrid`` object representing the far field mesh.
+
+        """
+        for k in kwargs:
+            if k == "convert_to_db":  # pragma: no cover
+                self.logger.warning("`convert_to_db` is deprecated since v0.7.8. Use `quantity_format` instead.")
+                quantity_format = "dB10" if kwargs["convert_to_db"] else "abs"
+            else:  # pragma: no cover
+                msg = "{} not valid.".format(k)
+                self.logger.error(msg)
+                raise TypeError(msg)
+
+        if farfield_quantity not in self.farfield_data:
+            self.logger.error("Far field quantity is not available.")
+            return False
+
+        data = self.farfield_data[farfield_quantity]
+
+        ff_data = conversion_function(data, quantity_format)
+
+        if not isinstance(ff_data, np.ndarray):  # pragma: no cover
+            self.logger.error("Format of the quantity is wrong.")
+            return False
+
+        theta = np.deg2rad(np.array(self.farfield_data["Theta"]))
+        phi = np.deg2rad(np.array(self.farfield_data["Phi"]))
+        mesh = get_structured_mesh(theta=theta, phi=phi, ff_data=ff_data)
+        return mesh
+
+    @pyaedt_function_handler()
+    def _read_eep_files(self, eep_path):
+        """Read the EEP file and populate all attributes with information about each port in the file.
+
+        Parameters
+        ----------
+        eep_path : str
+            Path to the EEP file.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        """
+        self._eep_file_info_list.append({})
+        if os.path.exists(eep_path):
+            with open(eep_path, "r") as reader:
+                lines = [line.split(None) for line in reader]
+            lines = lines[1:]  # remove header
+            for pattern in lines:
+                if len(pattern) >= 2:
+                    port = pattern[0]
+                    if ":" in port:
+                        port = port.split(":")[0] + "_" + port.split(":")[1]
+                    self._eep_file_info_list[-1][port] = [
+                        os.path.join(os.path.dirname(eep_path), pattern[1] + ".ffd"),
+                        pattern[2],
+                        pattern[3],
+                        pattern[4],
+                    ]
+                    self.port_position[port] = [float(pattern[2]), float(pattern[3]), float(pattern[4])]
+            return True
+        return False
+
+    @pyaedt_function_handler()
+    def _get_geometry(self):
+        """Get 3D meshes."""
+        from pyaedt.generic.plot import ModelPlotter
+
+        eep_file_path = os.path.abspath(self.eep_files[self._freq_index])
+        model_info = self.model_info[self._freq_index]
+        obj_meshes = []
+        if self._is_array[self._freq_index]:
+            non_array_geometry = model_info.copy()
+            components_info = self._component_objects[self._freq_index]
+            array_dimension = self._array_dimension[self._freq_index]
+            first_value = next(iter(model_info.values()))
+            sf = AEDT_UNITS["Length"][first_value[3]]
+            self.__model_units = first_value[3]
+            cell_info = self._cell_position[self._freq_index]
+
+            for cell_row in cell_info:
+                for cell_col in cell_row:
+                    # Initialize an empty mesh for this component
+                    model_pv = ModelPlotter()
+                    component_name = cell_col[0]
+                    component_info = components_info[component_name]
+                    rotation = cell_col[2]
+                    for component_obj in component_info[1:]:
+                        if component_obj in model_info:
+                            if component_obj in non_array_geometry:
+                                del non_array_geometry[component_obj]
+
+                            cad_path = os.path.join(os.path.dirname(eep_file_path), model_info[component_obj][0])
+                            if os.path.exists(cad_path):
+                                model_pv.add_object(
+                                    cad_path,
+                                    model_info[component_obj][1],
+                                    model_info[component_obj][2],
+                                    model_info[component_obj][3],
+                                )
+
+                    model_pv.generate_geometry_mesh()
+                    comp_meshes = []
+                    row, col = cell_col[3]
+
+                    # Perpendicular lattice vector
+                    if self._lattice_vector[self._freq_index][0] != 0:
+                        pos_x = (row - 1) * array_dimension[2] - array_dimension[0] / 2 + array_dimension[2] / 2
+                        pos_y = (col - 1) * array_dimension[3] - array_dimension[1] / 2 + array_dimension[3] / 2
+                    else:
+                        pos_y = (row - 1) * array_dimension[2] - array_dimension[0] / 2 + array_dimension[2] / 2
+                        pos_x = (col - 1) * array_dimension[3] - array_dimension[1] / 2 + array_dimension[3] / 2
+
+                    for obj in model_pv.objects:
+                        mesh = obj._cached_polydata
+                        translated_mesh = mesh.copy()
+                        color_cad = [i / 255 for i in obj.color]
+
+                        translated_mesh.translate(
+                            [-component_info[0][0] / sf, -component_info[0][1] / sf, -component_info[0][2] / sf],
+                            inplace=True,
+                        )
+
+                        if rotation != 0:
+                            translated_mesh.rotate_z(rotation, inplace=True)
+
+                        # Translate the mesh to its position
+                        translated_mesh.translate([pos_x / sf, pos_y / sf, component_info[0][2] / sf], inplace=True)
+
+                        comp_meshes.append([translated_mesh, color_cad, obj.opacity])
+
+                    obj_meshes.append(comp_meshes)
+
+            obj_meshes = [item for sublist in obj_meshes for item in sublist]
+        else:
+            non_array_geometry = model_info
+
+        if non_array_geometry:  # pragma: no cover
+            model_pv = ModelPlotter()
+            first_value = next(iter(non_array_geometry.values()))
+            sf = AEDT_UNITS["Length"][first_value[3]]
+
+            model_pv.off_screen = True
+            for object_in in non_array_geometry.values():
+                cad_path = os.path.join(os.path.dirname(eep_file_path), object_in[0])
+                if os.path.exists(cad_path):
+                    model_pv.add_object(
+                        cad_path,
+                        object_in[1],
+                        object_in[2],
+                        object_in[3],
+                    )
+                else:
+                    self.logger.warning("Geometry objects are not defined.")
+                    return False
+            self.__model_units = first_value[3]
+            model_pv.generate_geometry_mesh()
+            i = 0
+            for obj in model_pv.objects:
+                mesh = obj._cached_polydata
+                translated_mesh = mesh.copy()
+                color_cad = [i / 255 for i in obj.color]
+
+                if len(obj_meshes) > i:
+                    obj_meshes[i][0] += translated_mesh
+                else:
+                    obj_meshes.append([translated_mesh, color_cad, obj.opacity])
+                i += 1
+
+        return obj_meshes
+
+    @pyaedt_function_handler()
+    def _get_port_index(self, port_name=None):
+        """Get index of a given port.
+
+        Parameters
+        ----------
+        port_name : str or list
+            Port name or a list of port names.
+
+        Returns
+        -------
+        list
+            Element index.
+        """
+        port_index = {}
+
+        if not port_name:
+            port_name = self.all_port_names
+        elif isinstance(port_name, str):
+            port_name = [port_name]
+
+        index_offset = 0
+        if self._is_array[self._freq_index]:
+            port = port_name[0]
+            first_index = port.split("[", 1)[1].split("]", 1)[0]
+            if first_index[0] != "1":
+                index_offset = int(float(first_index[0])) - 1
+
+        for port in port_name:
+            if self._is_array[self._freq_index]:
+                try:
+                    str1 = port.split("[", 1)[1].split("]", 1)[0]
+                    port_index[port] = [int(i) - index_offset for i in str1.split(",")]
+                except:
+                    return False
+            else:
+                if not port_index:
+                    port_index[port] = [1, 1]
+                else:
+                    last_value = list(port_index.values())[-1]
+                    port_index[port] = [1, last_value[1] + 1]
+
+        return port_index
+
+    @staticmethod
+    @pyaedt_function_handler()
+    def _find_nearest(array, value):
+        idx = np.searchsorted(array, value, side="left")
+        if idx > 0 and (idx == len(array) or math.fabs(value - array[idx - 1]) < math.fabs(value - array[idx])):
+            return idx - 1
+        else:
+            return idx
+
+    @staticmethod
+    @pyaedt_function_handler()
+    def _rotation_to_euler_angles(R):
+        sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
+        singular = sy < 1e-6
+        if not singular:
+            x = math.atan2(R[2, 1], R[2, 2])
+            y = math.atan2(-R[2, 0], sy)
+            z = math.atan2(R[1, 0], R[0, 0])
+        else:
+            x = math.atan2(-R[1, 2], R[1, 1])
+            y = math.atan2(-R[2, 0], sy)
+            z = 0
+        return np.array([x, y, z])
+
+
+class FfdSolutionDataExporter(FfdSolutionData):
+    """Export far field solution data.
+
+    Parameters
+    ----------
+    app : :class:`pyaedt.Hfss`
+        HFSS application instance.
+    sphere_name : str
+        Infinite sphere to use.
+    setup_name : str
+        Name of the setup. Make sure to build a setup string in the form of ``"SetupName : SetupSweep"``.
+    frequencies : list
+        Frequency list to export. Specify either a list of strings with units or a list of floats in Hertz units.
+        For example, ``["9GHz", 9e9]``.
+    variations : dict, optional
+        Dictionary of all families including the primary sweep. The default value is ``None``.
+    overwrite : bool, optional
+        Whether to overwrite the existing far field solution data. The default is ``True``.
+
+    Examples
+    --------
+    >>> import pyaedt
+    >>> app = pyaedt.Hfss(specified_version="2023.2", designname="Antenna")
+    >>> setup_name = "Setup1 : LastAdaptive"
+    >>> frequencies = [77e9]
+    >>> sphere = "3D"
+    >>> data = app.get_antenna_ffd_solution_data(frequencies, setup_name, sphere)
+    >>> data.polar_plot_3d_pyvista(qty_str="rETotal", quantity_format="dB10")
+
+    """
+
+    def __init__(
+        self,
+        app,
+        sphere_name,
+        setup_name,
+        frequencies,
+        variations=None,
+        overwrite=True,
+    ):
+        self._app = app
+        self.sphere_name = sphere_name
+        self.setup_name = setup_name
+        if not isinstance(frequencies, list):
+            self.frequencies = [frequencies]
+        else:
+            self.frequencies = frequencies
+        self.variations = variations
+        self.overwrite = overwrite
+        self.model_info = []
+        if self._app.desktop_class.is_grpc_api:
+            self._app.set_phase_center_per_port()
+        else:
+            self._app.logger.warning("Set phase center in port location manually.")
+        eep_files = self._export_all_ffd()
+        FfdSolutionData.__init__(self, eep_files, self.frequencies)
 
     @pyaedt_function_handler()
     def _export_all_ffd(self):
+        """Export far field solution data of each port."""
         exported_name_base = "eep"
         exported_name_map = exported_name_base + ".txt"
         sol_setup_name_str = self.setup_name.replace(":", "_").replace(" ", "")
@@ -1548,17 +2465,16 @@ class FfdSolutionData(object):
             full_setup_str = "{}-{}-{}".format(sol_setup_name_str, self.sphere_name, frequency)
             export_path = "{}/{}/eep/".format(self._app.working_directory, full_setup_str)
             if settings.remote_rpc_session:
-                settings.remote_rpc_session.root.makedirs(export_path)
-                file_exists = settings.remote_rpc_session.root.pathexists(export_path + exported_name_base + ".txt")
+                settings.remote_rpc_session.filemanager.makedirs(export_path)
+                file_exists = settings.remote_rpc_session.filemanager.pathexists(export_path + exported_name_map)
             elif not os.path.exists(export_path):
                 os.makedirs(export_path)
-                file_exists = os.path.exists(export_path + exported_name_base + ".txt")
+                file_exists = False
             else:
-                file_exists = os.path.exists(export_path + exported_name_base + ".txt")
-            path_dict.append({})
+                file_exists = os.path.exists(export_path + exported_name_map)
             time_before = time.time()
             if self.overwrite or not file_exists:
-                self._app.logger.info("Exporting Embedded Element Patterns...")
+                self._app.logger.info("Exporting embedded element patterns...")
                 var = []
                 if self.variations:
                     for k, v in self.variations.items():
@@ -1580,653 +2496,130 @@ class FfdSolutionData(object):
                         ]
                     )
                 except:
-                    self._app.logger.error("Failed to export one Element Pattern.")
+                    self._app.logger.error("Failed to export one element pattern.")
                     self._app.logger.error(export_path + exported_name_base + ".ffd")
 
             else:
                 self._app.logger.info("Using Existing Embedded Element Patterns")
             local_path = "{}/{}/eep/".format(settings.remote_rpc_session_temp_folder, full_setup_str)
             export_path = check_and_download_folder(local_path, export_path)
-            if os.path.exists(export_path + "/" + exported_name_map):
-                with open(export_path + "/" + exported_name_map, "r") as reader:
-                    lines = [line.split(None) for line in reader]
-                lines = lines[1:]  # remove header
-                for pattern in lines:
-                    if len(pattern) >= 2:
-                        port = pattern[0]
-                        if ":" in port:
-                            port = port.split(":")[0]
-                        path_dict[-1][port] = export_path + "/" + pattern[1] + ".ffd"
+            if os.path.exists(os.path.join(export_path, exported_name_map)):
+                geometry_path = os.path.join(export_path, "geometry")
+                if not os.path.exists(geometry_path):
+                    os.mkdir(geometry_path)
+
+                path_dict.append(os.path.join(export_path, exported_name_map))
+                metadata_file_name = os.path.join(export_path, "eep.json")
+                items = {"variation": self._app.odesign.GetNominalVariation(), "frequency": frequency}
+
+                obj_list = self._create_geometries(geometry_path)
+                if obj_list:
+                    items["model_info"] = obj_list
+                    self.model_info.append(obj_list)
+
+                if self._app.component_array:
+                    component_array = self._app.component_array[self._app.component_array_names[0]]
+                    items["component_objects"] = component_array.get_component_objects()
+                    items["cell_position"] = component_array.get_cell_position()
+                    items["array_dimension"] = [
+                        component_array.a_length,
+                        component_array.b_length,
+                        component_array.a_length / component_array.a_size,
+                        component_array.b_length / component_array.b_size,
+                    ]
+                    items["lattice_vector"] = component_array.lattice_vector()
+
+                with open(metadata_file_name, "w") as f:
+                    json.dump(items, f, indent=2)
         elapsed_time = time.time() - time_before
-        self._app.logger.info("Exporting Embedded Element Patterns...Done: %s seconds", elapsed_time)
+        self._app.logger.info("Exporting embedded element patterns.... Done: %s seconds", elapsed_time)
         return path_dict
 
     @pyaedt_function_handler()
-    def plot_farfield_contour(
-        self,
-        qty_str="RealizedGain",
-        phi_scan=0,
-        theta_scan=0,
-        title="RectangularPlot",
-        convert_to_db=True,
-        export_image_path=None,
-    ):
-        """Create a Contour plot of specified quantity.
+    def _create_geometries(self, export_path):
+        """Export the geometry in OBJ format."""
+        self._app.logger.info("Exporting geometry...")
+        model_pv = self._app.post.get_model_plotter_geometries(plot_air_objects=False)
+        obj_list = {}
+        for obj in model_pv.objects:
+            object_name = os.path.basename(obj.path)
+            name = os.path.splitext(object_name)[0]
+            original_path = os.path.dirname(obj.path)
+            new_path = os.path.join(os.path.abspath(export_path), object_name)
 
-        Parameters
-        ----------
-        qty_str : str, optional
-            Quantity to plot. Default `"RealizedGain"`.
-        phi_scan : float, int, optional
-            Phi Scan Angle in degree. Default `0`.
-        theta_scan : float, int, optional
-            Theta Scan Angle in degree. Default `0`.
-        title : str, optional
-            Plot title. Default `"RectangularPlot"`.
-        convert_to_db : bool, optional
-            Either if the quantity has to be converted in db or not. Default is `True`.
-        export_image_path : str, optional
-            Full path to image file. Default is None to not export.
-
-        Returns
-        -------
-        :class:`matplotlib.plt`
-            Matplotlib fig object.
-        """
-        data = self.beamform(phi_scan, theta_scan)
-        if qty_str == "":
-            qty_to_plot = data
-            qty_str = "Data"
-        else:
-            qty_to_plot = data[qty_str]
-        qty_to_plot = np.reshape(qty_to_plot, (data["nTheta"], data["nPhi"]))
-        th, ph = np.meshgrid(data["Theta"], data["Phi"])
-
-        if convert_to_db:
-            factor = 20
-            if "Gain" in qty_str:
-                factor = 10
-            qty_to_plot = factor * np.log10(np.abs(qty_to_plot))
-
-        return plot_contour(
-            x=th,
-            y=ph,
-            qty_to_plot=qty_to_plot,
-            xlabel="Theta (degree)",
-            ylabel="Phi (degree)",
-            title=title,
-            levels=self.levels,
-            snapshot_path=export_image_path,
-        )
-
-    @pyaedt_function_handler()
-    def plot_2d_cut(
-        self,
-        qty_str="RealizedGain",
-        primary_sweep="phi",
-        secondary_sweep_value=0,
-        phi_scan=0,
-        theta_scan=0,
-        title="Far Field Cut",
-        convert_to_db=True,
-        export_image_path=None,
-    ):
-        """Create a 2D plot of specified quantity in matplotlib.
-
-        Parameters
-        ----------
-        qty_str : str, optional
-            Quantity to plot. Default `"RealizedGain"`.
-        primary_sweep : str, optional.
-            X Axis variable. Default is `"phi"`. Option is  `"theta"`.
-        secondary_sweep_value : float, list, string, optional
-            List of cuts on secondary sweep to plot. Options are `"all"`, single value float or list of float.
-        phi_scan : float, int, optional
-            Phi Scan Angle in degree. Default `0`.
-        theta_scan : float, int, optional
-            Theta Scan Angle in degree. Default `0`.
-        title : str, optional
-            Plot title. Default `"RectangularPlot"`.
-        convert_to_db : bool, optional
-            Either if the quantity has to be converted in db or not. Default is `True`.
-        export_image_path : str, optional
-            Full path to image file. Default is None to not export.
-
-
-        Returns
-        -------
-        :class:`matplotlib.plt`
-            Matplotlib fig object.
-        """
-        data = self.beamform(phi_scan, theta_scan)
-
-        data_to_plot = data[qty_str]
-        curves = []
-        if primary_sweep == "phi":
-            x_key = "Phi"
-            y_key = "Theta"
-        else:
-            y_key = "Phi"
-            x_key = "Theta"
-        x = data[x_key]
-        xlabel = x_key
-        if x_key == "Phi":
-            temp = data_to_plot
-        else:
-            temp = data_to_plot.T
-        if secondary_sweep_value == "all":
-            for el in data[y_key]:
-                idx = self._find_nearest(data[y_key], el)
-                y = temp[idx]
-                if convert_to_db:
-                    if "Gain" in qty_str or "Dir" in qty_str:
-                        y = 10 * np.log10(y)
-                    else:
-                        y = 20 * np.log10(y)
-                curves.append([x, y, "{}={}".format(y_key, el)])
-        elif isinstance(secondary_sweep_value, list):
-            list_inserted = []
-            for el in secondary_sweep_value:
-                theta_idx = self._find_nearest(data[y_key], el)
-                if theta_idx not in list_inserted:
-                    y = temp[theta_idx]
-                    if convert_to_db:
-                        if "Gain" in qty_str or "Dir" in qty_str:
-                            y = 10 * np.log10(y)
-                        else:
-                            y = 20 * np.log10(y)
-                    curves.append([x, y, "{}={}".format(y_key, el)])
-                    list_inserted.append(theta_idx)
-        else:
-            theta_idx = self._find_nearest(data[y_key], secondary_sweep_value)
-            y = temp[theta_idx]
-            if convert_to_db:
-                if "Gain" in qty_str or "Dir" in qty_str:
-                    y = 10 * np.log10(y)
-                else:
-                    y = 20 * np.log10(y)
-            curves.append([x, y, "{}={}".format(y_key, data[y_key][theta_idx])])
-
-        return plot_2d_chart(curves, xlabel=xlabel, ylabel=qty_str, title=title, snapshot_path=export_image_path)
-
-    @pyaedt_function_handler()
-    def polar_plot_3d(
-        self,
-        qty_str="RealizedGain",
-        phi_scan=0,
-        theta_scan=0,
-        title="3D Plot",
-        convert_to_db=True,
-        export_image_path=None,
-    ):
-        """Create a 3d plot of specified quantity.
-
-        Parameters
-        ----------
-        qty_str : str, optional
-            Quantity to plot. Default `"RealizedGain"`.
-        phi_scan : float, int, optional
-            Phi Scan Angle in degree. Default `0`.
-        theta_scan : float, int, optional
-            Theta Scan Angle in degree. Default `0`.
-        title : str, optional
-            Plot title. Default `"3D Plot"`.
-        convert_to_db : bool, optional
-            Either if the quantity has to be converted in db or not. Default is `True`.
-        export_image_path : str, optional
-            Full path to image file. Default is None to not export.
-
-
-        Returns
-        -------
-
-        """
-        data = self.beamform(phi_scan, theta_scan)
-
-        if convert_to_db:
-            ff_data = 10 * np.log10(data[qty_str])
-            # renormalize to 0 and 1
-            ff_max_dB = np.max(ff_data)
-            ff_min_dB = np.min(ff_data)
-            ff_data_renorm = (ff_data - ff_min_dB) / (ff_max_dB - ff_min_dB)
-        else:
-            ff_data = data[qty_str]
-            # renormalize to 0 and 1
-            ff_max = np.max(ff_data)
-            ff_min = np.min(ff_data)
-            ff_data_renorm = (ff_data - ff_max) / (ff_max - ff_min)
-
-        theta = np.deg2rad(np.array(data["Theta"]))
-        phi = np.deg2rad(np.array(data["Phi"]))
-        phi_grid, theta_grid = np.meshgrid(phi, theta)
-        r = np.reshape(ff_data_renorm, (len(data["Theta"]), len(data["Phi"])))
-
-        x = r * np.sin(theta_grid) * np.cos(phi_grid)
-        y = r * np.sin(theta_grid) * np.sin(phi_grid)
-        z = r * np.cos(theta_grid)
-        plot_3d_chart([x, y, z], xlabel="Theta", ylabel="Phi", title=title, snapshot_path=export_image_path)
-
-    @pyaedt_function_handler()
-    def _get_geometry(self, is_antenna_array=True):
-        data = self.beamform(0, 0)
-        time_before = time.time()
-        self._app.logger.info("Exporting Geometry...")
-
-        # obj is being exported as model units, scaling factor needed for display
-        sf = AEDT_UNITS["Length"][self._app.modeler.model_units]
-
-        bounding_box = self._app.modeler.obounding_box
-        xmax = float(bounding_box[3]) - float(bounding_box[0])
-        ymax = float(bounding_box[4]) - float(bounding_box[1])
-        zmax = float(bounding_box[5]) - float(bounding_box[2])
-
-        geo_path = "{}\\geo\\".format(self._app.working_directory)
-        if not os.path.exists(geo_path):
-            os.makedirs(geo_path)
-
-        meshes = self._app.post.get_model_plotter_geometries(plot_air_objects=False).meshes
-
-        duplicate_mesh = meshes.copy()
-        new_meshes = None
-        if is_antenna_array:
-            for each in data["Element_Location"]:
-                translated_mesh = duplicate_mesh.copy()
-                offset_xyz = data["Element_Location"][each] * sf
-                if np.abs(2 * offset_xyz[0]) > xmax:  # assume array is centere, factor of 2
-                    xmax = offset_xyz[0] * 2
-                if np.abs(2 * offset_xyz[1]) > ymax:  # assume array is centere, factor of 2
-                    ymax = offset_xyz[1] * 2
-                translated_mesh.translate(offset_xyz, inplace=True)
-                if new_meshes:
-                    new_meshes += translated_mesh
-                else:
-                    new_meshes = translated_mesh
-
-        self.all_max = np.max(np.array([xmax, ymax, zmax]))
-        elapsed_time = time.time() - time_before
-        self._app.logger.info("Exporting Geometry...Done: %s seconds", elapsed_time)
-        return new_meshes
-
-    @pyaedt_function_handler()
-    def polar_plot_3d_pyvista(
-        self,
-        qty_str="RealizedGain",
-        convert_to_db=True,
-        position=None,
-        rotation=None,
-        export_image_path=None,
-        show=True,
-    ):
-        """Create a 3d Polar Plot of Geometry with Radiation Pattern in Pyvista.
-
-        Parameters
-        ----------
-        qty_str : str, optional
-            Quantity to plot. Default `"RealizedGain"`.
-        convert_to_db : bool, optional
-            Either if the quantity has to be converted in db or not. Default is `True`.
-        export_image_path : str, optional
-            Full path to image file. Default is None to not export.
-        position : list, optional
-            It can be a list of numpy list of origin of plot. Default is [0,0,0].
-        rotation : list, optional
-            It can be a list of numpy list of origin of plot.
-            Default is [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]].
-        show : bool, optional
-            Either if the plot has to be shown or not. Default is `True`.
-
-        Returns
-        -------
-        PyVista object
-        """
-        if not position:
-            position = np.zeros(3)
-        elif isinstance(position, (list, tuple)):
-            position = np.array(position)
-        if not rotation:
-            rotation = np.eye(3)
-        elif isinstance(rotation, (list, tuple)):
-            rotation = np.array(rotation)
-        self.beamform(phi_scan=0, theta_scan=0)
-        plot_min = -40
-        self._get_far_field_mesh(qty_str=qty_str, convert_to_db=convert_to_db)
-
-        # plot everything together
-        rotation_euler = self._rotation_to_euler_angles(rotation) * 180 / np.pi
-        p = pv.Plotter(notebook=is_notebook(), off_screen=not show)
-        uf = UpdateBeamForm(self)
-
-        p.add_slider_widget(
-            uf.update_phi,
-            rng=[0, 360],
-            value=0,
-            title="Phi",
-            pointa=(0.55, 0.1),
-            pointb=(0.74, 0.1),
-            style="modern",
-            event_type="always",
-            title_height=0.02,
-        )
-        p.add_slider_widget(
-            uf.update_theta,
-            rng=[-180, 180],
-            value=0,
-            title="Theta",
-            pointa=(0.77, 0.1),
-            pointb=(0.98, 0.1),
-            style="modern",
-            event_type="always",
-            title_height=0.02,
-        )
-
-        # sargs = dict(height=0.4, vertical=True, position_x=0.05, position_y=0.5)
-        sargs = dict(
-            title_font_size=12,
-            label_font_size=10,
-            shadow=True,
-            n_labels=7,
-            italic=True,
-            fmt="%.1f",
-            font_family="arial",
-            vertical=True,
-            position_x=0.05,
-            position_y=0.65,
-            height=0.3,
-            width=0.06,
-            outline=True,
-        )
-        # ff_mesh_inst = p.add_mesh(uf.output,smooth_shading=True,cmap="jet",scalar_bar_args=sargs,opacity=0.5)
-        # not sure why, but smooth_shading causes this to not update
-
-        ff_mesh_inst = p.add_mesh(uf.output, cmap="jet", clim=[plot_min, self.max_gain], scalar_bar_args=sargs)
-        cad_mesh = self._get_geometry()
-        if cad_mesh:
-
-            def toggle_vis_ff(flag):
-                ff_mesh_inst.SetVisibility(flag)
-
-            def toggle_vis_cad(flag):
-                cad.SetVisibility(flag)
-
-            def scale(value=1):
-                ff_mesh_inst.SetScale(value, value, value)
-                ff_mesh_inst.SetPosition(position)
-                ff_mesh_inst.SetOrientation(rotation_euler)
-                # p.add_mesh(ff_mesh, smooth_shading=True,cmap="jet")
-                return
-
-            p.add_checkbox_button_widget(toggle_vis_ff, value=True, size=30)
-            p.add_text("Show Far Fields", position=(70, 25), color="white", font_size=10)
-
-            slider_max = int(np.ceil(self.all_max / 2 / self.max_gain))
-            if slider_max > 0:
-                slider_min = 0
-                value = slider_max / 3
-            else:
-                slider_min = slider_max
-                slider_max = 0
-                value = slider_min / 3
-            p.add_slider_widget(
-                scale,
-                [slider_min, slider_max],
-                title="Scale Plot",
-                value=value,
-                pointa=(0.7, 0.93),
-                pointb=(0.99, 0.93),
-                style="modern",
-                title_height=0.02,
-            )
-
-            if "MaterialIds" in cad_mesh.array_names:
-                color_display_type = cad_mesh["MaterialIds"]
-            else:
-                color_display_type = None
-            cad = p.add_mesh(cad_mesh, scalars=color_display_type, show_scalar_bar=False, opacity=0.5)
-            p.add_checkbox_button_widget(toggle_vis_cad, value=True, position=(10, 70), size=30)
-            p.add_text("Show Geometry", position=(70, 75), color="white", font_size=10)
-        if export_image_path:
-            p.show(screenshot=export_image_path)
-        else:
-            p.show()
-        return p
-
-    @pyaedt_function_handler()
-    def polar_plot_3d_pyvista_2beams(
-        self,
-        qty_str="RealizedGain",
-        convert_to_db=True,
-        position=None,
-        rotation=None,
-        export_image_path=None,
-        show=True,
-    ):
-        """Create a 3d Polar Plot with 2 beams of Geometry with Radiation Pattern in Pyvista.
-
-        Parameters
-        ----------
-        qty_str : str, optional
-            Quantity to plot. Default `"RealizedGain"`.
-        convert_to_db : bool, optional
-            Either if the quantity has to be converted in db or not. Default is `True`.
-        export_image_path : str, optional
-            Full path to image file. Default is None to not export.
-        position : list, optional
-            It can be a list of numpy list of origin of plot. Default is [0,0,0].
-        rotationn : list, optional
-            It can be a list of numpy list of origin of plot.
-            Default is [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]].
-        show : bool, optional
-            Either if the plot has to be shown or not. Default is `True`.
-
-        Returns
-        -------
-        PyVista object
-        """
-        if not position:
-            position = np.zeros(3)
-        elif isinstance(position, (list, tuple)):
-            position = np.array(position)
-        if not rotation:
-            rotation = np.eye(3)
-        elif isinstance(rotation, (list, tuple)):
-            rotation = np.array(rotation)
-        self.beamform_2beams(phi_scan1=0, theta_scan1=0, phi_scan2=0, theta_scan2=0)
-        self._get_far_field_mesh(qty_str=qty_str, convert_to_db=convert_to_db)
-
-        uf = Update2BeamForms(self, max_value=self.max_gain)
-        rotation_euler = self._rotation_to_euler_angles(rotation) * 180 / np.pi
-
-        p = pv.Plotter(notebook=is_notebook(), off_screen=False, window_size=[1024, 768])
-
-        p.add_slider_widget(
-            uf.update_phi1,
-            rng=[0, 360],
-            value=0,
-            title="Phi1",
-            pointa=(0.35, 0.1),
-            pointb=(0.64, 0.1),
-            style="modern",
-            event_type="always",
-        )
-        p.add_slider_widget(
-            uf.update_theta1,
-            rng=[-180, 180],
-            value=0,
-            title="Theta1",
-            pointa=(0.67, 0.1),
-            pointb=(0.98, 0.1),
-            style="modern",
-            event_type="always",
-        )
-
-        p.add_slider_widget(
-            uf.update_phi2,
-            rng=[0, 360],
-            value=0,
-            title="Phi2",
-            pointa=(0.35, 0.25),
-            pointb=(0.64, 0.25),
-            style="modern",
-            event_type="always",
-        )
-        p.add_slider_widget(
-            uf.update_theta2,
-            rng=[-180, 180],
-            value=0,
-            title="Theta2",
-            pointa=(0.67, 0.25),
-            pointb=(0.98, 0.25),
-            style="modern",
-            event_type="always",
-        )
-        sargs = dict(height=0.4, vertical=True, position_x=0.05, position_y=0.5)
-        # ff_mesh_inst = p.add_mesh(uf.output,smooth_shading=True,cmap="jet",scalar_bar_args=sargs,opacity=0.5)
-        # not sure why, but smooth_shading causes this to not update
-        plot_min = self.min_gain
-        ff_mesh_inst = p.add_mesh(uf.output, cmap="jet", clim=[plot_min, self.max_gain], scalar_bar_args=sargs)
-        cad_mesh = self._get_geometry()
-        if cad_mesh:
-
-            def toggle_vis_ff(flag):
-                ff_mesh_inst.SetVisibility(flag)
-
-            def toggle_vis_cad(flag):
-                cad.SetVisibility(flag)
-
-            def scale(value=1):
-                ff_mesh_inst.SetScale(value, value, value)
-                ff_mesh_inst.SetPosition(position)
-                ff_mesh_inst.SetOrientation(rotation_euler)
-                # p.add_mesh(ff_mesh, smooth_shading=True,cmap="jet")
-                return
-
-            p.add_checkbox_button_widget(toggle_vis_ff, value=True)
-            p.add_text("Show Far Fields", position=(70, 25), color="black", font_size=12)
-            slider_max = int(np.ceil(self.all_max / 2 / self.max_gain))
-            p.add_slider_widget(scale, [0, slider_max], title="Scale Plot", value=slider_max / 2)
-
-            if "MaterialIds" in cad_mesh.array_names:
-                color_display_type = cad_mesh["MaterialIds"]
-            else:
-                color_display_type = None
-            cad = p.add_mesh(cad_mesh, scalars=color_display_type, show_scalar_bar=False, opacity=0.5)
-            size = int(p.window_size[1] / 40)
-            p.add_checkbox_button_widget(toggle_vis_cad, size=size, value=True, position=(10, 70))
-            p.add_text("Show Geometry", position=(70, 75), color="black", font_size=12)
-        if export_image_path:
-            p.show(screenshot=export_image_path)
-        else:
-            p.show()
-        return p
-
-    @staticmethod
-    @pyaedt_function_handler()
-    def _find_nearest(array, value):
-        idx = np.searchsorted(array, value, side="left")
-        if idx > 0 and (idx == len(array) or math.fabs(value - array[idx - 1]) < math.fabs(value - array[idx])):
-            return idx - 1
-        else:
-            return idx
-
-    @staticmethod
-    @pyaedt_function_handler()
-    def _rotation_to_euler_angles(R):
-
-        sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
-        singular = sy < 1e-6
-        if not singular:
-            x = math.atan2(R[2, 1], R[2, 2])
-            y = math.atan2(-R[2, 0], sy)
-            z = math.atan2(R[1, 0], R[0, 0])
-        else:
-            x = math.atan2(-R[1, 2], R[1, 1])
-            y = math.atan2(-R[2, 0], sy)
-            z = 0
-        return np.array([x, y, z])
+            if not os.path.exists(new_path):
+                new_path = shutil.move(obj.path, export_path)
+            if os.path.exists(os.path.join(original_path, name + ".mtl")):
+                try:
+                    os.remove(os.path.join(original_path, name + ".mtl"))
+                except SystemExit:
+                    self.logger.warning("File cannot be removed.")
+            obj_list[obj.name] = [
+                os.path.join(os.path.basename(export_path), object_name),
+                obj.color,
+                obj.opacity,
+                obj.units,
+            ]
+        return obj_list
 
 
 class UpdateBeamForm:
-    def __init__(self, ff):
+    """Provides for updating far field data.
+
+    This class is used to interact with the far field Theta and Phi scan.
+
+    Parameters
+    ----------
+    ff : :class:`pyaedt.modules.solutions.FfdSolutionData`
+        Far field solution data instance.
+    farfield_quantity : str, optional
+        Quantity to plot. The default is ``"RealizedGain"``.
+        Available quantities are: ``"RealizedGain"``, ``"RealizedGain_Phi"``, ``"RealizedGain_Theta"``,
+        ``"rEPhi"``, ``"rETheta"``, and ``"rETotal"``.
+    quantity_format : str, optional
+        Conversion data function.
+        Available functions are: ``"abs"``, ``"ang"``, ``"dB10"``, ``"dB20"``, ``"deg"``, ``"imag"``, ``"norm"``,
+            and ``"real"``.
+    """
+
+    def __init__(self, ff, farfield_quantity="RealizedGain", quantity_format="abs"):
         self.output = ff.mesh
         self._phi = 0
         self._theta = 0
         # default parameters
         self.ff = ff
-        self.qty_str = "RealizedGain"
-        self.convert_to_db = True
+        self.farfield_quantity = farfield_quantity
+        self.quantity_format = quantity_format
 
+    @pyaedt_function_handler()
     def _update_both(self):
-        self.ff.beamform(phi_scan=self._phi, theta_scan=self._theta)
-        # perc_of_maxgain= self.ff.max_gain/self.max_value
+        """Update far field."""
+        self.ff.farfield_data = self.ff.combine_farfield(phi_scan=self._phi, theta_scan=self._theta)
 
-        self.ff._get_far_field_mesh(self.qty_str, self.convert_to_db)
+        self.ff.mesh = self.ff.get_far_field_mesh(self.farfield_quantity, self.quantity_format)
 
         self.output.overwrite(self.ff.mesh)
         return
 
+    @pyaedt_function_handler()
     def update_phi(self, phi):
-        """Updates the Pyvista Plot with new phi value."""
+        """Update the Phi value."""
         self._phi = phi
         self._update_both()
 
+    @pyaedt_function_handler()
     def update_theta(self, theta):
-        """Updates the Pyvista Plot with new theta value."""
+        """Update the Theta value."""
         self._theta = theta
         self._update_both()
 
 
-class Update2BeamForms:
-    def __init__(self, ff, max_value=1):
-        self.max_value = max_value
-        self.output = ff.mesh
-        self._phi1 = 0
-        self._theta1 = 0
-        self._phi2 = 0
-        self._theta2 = 0
-        # default parameters
-        self.ff = ff
-        self.qty_str = "RealizedGain"
-        self.convert_to_db = True
-
-    def _update_both(self):
-        self.ff.beamform_2beams(
-            phi_scan1=self._phi1, theta_scan1=self._theta1, phi_scan2=self._phi2, theta_scan2=self._theta2
-        )
-        self.ff._get_far_field_mesh(self.qty_str, self.convert_to_db)
-        current_max = np.max(self.ff.mesh["FarFieldData"])
-        delta = self.max_value - current_max
-        self.ff.mesh["FarFieldData"] = self.ff.mesh["FarFieldData"] - delta
-        self.output.overwrite(self.ff.mesh)
-        return
-
-    def update_phi1(self, phi1):
-        """Updates the Pyvista Plot with new phi1 value."""
-        self._phi1 = phi1
-        self._update_both()
-
-    def update_theta1(self, theta1):
-        """Updates the Pyvista Plot with new theta1 value."""
-        self._theta1 = theta1
-        self._update_both()
-
-    def update_phi2(self, phi2):
-        """Updates the Pyvista Plot with new phi2 value."""
-        self._phi2 = phi2
-        self._update_both()
-
-    def update_theta2(self, theta2):
-        """Updates the Pyvista Plot with new theta2 value."""
-        self._theta2 = theta2
-        self._update_both()
-
-
 class FieldPlot:
-    """Creates and edits field plots.
+    """Provides for creating and editing field plots.
 
     Parameters
     ----------
     postprocessor : :class:`pyaedt.modules.PostProcessor.PostProcessor`
-
     objlist : list
         List of objects.
     solutionName : str
@@ -2248,6 +2641,9 @@ class FieldPlot:
         solutionName="",
         quantityName="",
         intrinsincList={},
+        seedingFaces=[],
+        layers_nets=[],
+        layers_plot_type="LayerNetsExtFace",
     ):
         self._postprocessor = postprocessor
         self.oField = postprocessor.ofieldsreporter
@@ -2255,6 +2651,9 @@ class FieldPlot:
         self.surfaces_indexes = surfacelist
         self.line_indexes = linelist
         self.cutplane_indexes = cutplanelist
+        self.layers_nets = layers_nets
+        self.layers_plot_type = layers_plot_type
+        self.seeding_faces = seedingFaces
         self.solutionName = solutionName
         self.quantityName = quantityName
         self.intrinsincList = intrinsincList
@@ -2278,6 +2677,28 @@ class FieldPlot:
         self.CloudSpacing = 0.5
         self.CloudMinSpacing = -1
         self.CloudMaxSpacing = -1
+        self.LineWidth = 4
+        self.LineStyle = "Cylinder"
+        self.IsoValType = "Tone"
+        self.NumofPoints = 100
+        self.TraceStepLength = "0.001mm"
+        self.UseAdaptiveStep = True
+        self.SeedingSamplingOption = True
+        self.SeedingPointsNumber = 15
+        self.FractionOfMaximum = 0.8
+        self._filter_boxes = []
+        self.field_type = None
+
+    @property
+    def filter_boxes(self):
+        """Volumes on which filter the plot."""
+        return self._filter_boxes
+
+    @filter_boxes.setter
+    def filter_boxes(self, val):
+        if isinstance(val, str):
+            val = [val]
+        self._filter_boxes = val
 
     @property
     def plotGeomInfo(self):
@@ -2291,6 +2712,9 @@ class FieldPlot:
             idx += 1
         if self.line_indexes:
             idx += 1
+        if self.layers_nets:
+            idx += 1
+
         info = [idx]
         if self.volume_indexes:
             info.append("Volume")
@@ -2301,18 +2725,21 @@ class FieldPlot:
         if self.surfaces_indexes:
             model_faces = []
             nonmodel_faces = []
-            models = self._postprocessor.modeler.model_objects
-            for index in self.surfaces_indexes:
-                try:
-                    if isinstance(index, FacePrimitive):
-                        index = index.id
-                    oname = self._postprocessor.modeler.oeditor.GetObjectNameByFaceID(index)
-                    if oname in models:
-                        model_faces.append(str(index))
-                    else:
-                        nonmodel_faces.append(str(index))
-                except:
-                    pass
+            if self._postprocessor._app.design_type == "HFSS 3D Layout Design":
+                model_faces = [str(i) for i in self.surfaces_indexes]
+            else:
+                models = self._postprocessor.modeler.model_objects
+                for index in self.surfaces_indexes:
+                    try:
+                        if isinstance(index, FacePrimitive):
+                            index = index.id
+                        oname = self._postprocessor.modeler.oeditor.GetObjectNameByFaceID(index)
+                        if oname in models:
+                            model_faces.append(str(index))
+                        else:
+                            nonmodel_faces.append(str(index))
+                    except:
+                        pass
             info.append("Surface")
             if model_faces:
                 info.append("FacesList")
@@ -2335,6 +2762,18 @@ class FieldPlot:
             info.append(len(self.line_indexes))
             for index in self.line_indexes:
                 info.append(str(index))
+        if self.layers_nets:
+            if self.layers_plot_type == "LayerNets":
+                info.append("Volume")
+                info.append("LayerNets")
+            else:
+                info.append("Surface")
+                info.append("LayerNetsExtFace")
+            info.append(len(self.layers_nets))
+            for index in self.layers_nets:
+                info.append(index[0])
+                info.append(len(index[1:]))
+                info.extend(index[1:])
         return info
 
     @property
@@ -2370,7 +2809,11 @@ class FieldPlot:
         list
             List of plot settings.
         """
-        if self.surfaces_indexes:
+        if (
+            self.surfaces_indexes
+            or self.cutplane_indexes
+            or (self.layers_nets and self.layers_plot_type == "LayerNetsExtFace")
+        ):
             arg = [
                 "NAME:PlotOnSurfaceSettings",
                 "Filled:=",
@@ -2402,6 +2845,19 @@ class FieldPlot:
                 ],
                 "GridColor:=",
                 self.GridColor,
+            ]
+        elif self.line_indexes:
+            arg = [
+                "NAME:PlotOnLineSettings",
+                ["NAME:LineSettingsID", "Width:=", self.LineWidth, "Style:=", self.LineStyle],
+                "IsoValType:=",
+                self.IsoValType,
+                "ArrowUniform:=",
+                self.ArrowUniform,
+                "NumofArrow:=",
+                self.NumofPoints,
+                "Refinement:=",
+                self.Refinement,
             ]
         else:
             arg = [
@@ -2442,7 +2898,7 @@ class FieldPlot:
             List of surface plot settings.
 
         """
-        return [
+        out = [
             "NAME:" + self.name,
             "SolutionName:=",
             self.solutionName,
@@ -2450,26 +2906,105 @@ class FieldPlot:
             self.quantityName,
             "PlotFolder:=",
             self.plotFolder,
-            "UserSpecifyName:=",
-            1,
-            "UserSpecifyFolder:=",
-            1,
-            "StreamlinePlot:=",
-            False,
-            "AdjacentSidePlot:=",
-            False,
-            "FullModelPlot:=",
-            False,
-            "IntrinsicVar:=",
-            self.intrinsicVar,
-            "PlotGeomInfo:=",
-            self.plotGeomInfo,
-            "FilterBoxes:=",
-            [0],
-            self.plotsettings,
-            "EnableGaussianSmoothing:=",
-            False,
         ]
+        if self.field_type:
+            out.extend(["FieldType:=", self.field_type])
+        out.extend(
+            [
+                "UserSpecifyName:=",
+                1,
+                "UserSpecifyFolder:=",
+                1,
+                "StreamlinePlot:=",
+                False,
+                "AdjacentSidePlot:=",
+                False,
+                "FullModelPlot:=",
+                False,
+                "IntrinsicVar:=",
+                self.intrinsicVar,
+                "PlotGeomInfo:=",
+                self.plotGeomInfo,
+                "FilterBoxes:=",
+                [len(self.filter_boxes)] + self.filter_boxes,
+                self.plotsettings,
+                "EnableGaussianSmoothing:=",
+                False,
+            ]
+        )
+        return out
+
+    @property
+    def surfacePlotInstructionLineTraces(self):
+        """Surface plot settings for field line traces.
+
+        ..note::
+            ``Specify seeding points on selections`` is by default set to ``by sampling``.
+
+        Returns
+        -------
+        list
+            List of plot settings for line traces.
+
+        """
+        out = [
+            "NAME:" + self.name,
+            "SolutionName:=",
+            self.solutionName,
+            "UserSpecifyName:=",
+            0,
+            "UserSpecifyFolder:=",
+            0,
+            "QuantityName:=",
+            "QuantityName_FieldLineTrace",
+            "PlotFolder:=",
+            self.plotFolder,
+        ]
+        if self.field_type:
+            out.extend(["FieldType:=", self.field_type])
+        out.extend(
+            [
+                "IntrinsicVar:=",
+                self.intrinsicVar,
+                "Trace Step Length:=",
+                self.TraceStepLength,
+                "Use Adaptive Step:=",
+                self.UseAdaptiveStep,
+                "Seeding Faces:=",
+                self.seeding_faces,
+                "Seeding Markers:=",
+                [0],
+                "Surface Tracing Objects:=",
+                self.surfaces_indexes,
+                "Volume Tracing Objects:=",
+                self.volume_indexes,
+                "Seeding Sampling Option:=",
+                self.SeedingSamplingOption,
+                "Seeding Points Number:=",
+                self.SeedingPointsNumber,
+                "Fractional of Maximal:=",
+                self.FractionOfMaximum,
+                "Discrete Seeds Option:=",
+                "Marker Point",
+                [
+                    "NAME:InceptionEvaluationSettings",
+                    "Gas Type:=",
+                    0,
+                    "Gas Pressure:=",
+                    1,
+                    "Use Inception:=",
+                    True,
+                    "Potential U0:=",
+                    0,
+                    "Potential K:=",
+                    0,
+                    "Potential A:=",
+                    1,
+                ],
+                self.field_line_trace_plot_settings,
+            ]
+        )
+        return out
 
     @property
     def field_plot_settings(self):
@@ -2516,6 +3051,22 @@ class FieldPlot:
             ],
         ]
 
+    @property
+    def field_line_trace_plot_settings(self):
+        """Settings for the field line traces in the plot.
+
+        Returns
+        -------
+        list
+            List of settings for the field line traces in the plot.
+        """
+        return [
+            "NAME:FieldLineTracePlotSettings",
+            ["NAME:LineSettingsID", "Width:=", self.LineWidth, "Style:=", self.LineStyle],
+            "IsoValType:=",
+            self.IsoValType,
+        ]
+
     @pyaedt_function_handler()
     def create(self):
         """Create a field plot.
@@ -2526,9 +3077,14 @@ class FieldPlot:
             ``True`` when successful, ``False`` when failed.
 
         """
-
-        self.oField.CreateFieldPlot(self.surfacePlotInstruction, "Field")
-        return True
+        try:
+            if self.seeding_faces:
+                self.oField.CreateFieldPlot(self.surfacePlotInstructionLineTraces, "FieldLineTrace")
+            else:
+                self.oField.CreateFieldPlot(self.surfacePlotInstruction, "Field")
+            return True
+        except:
+            return False
 
     @pyaedt_function_handler()
     def update(self):
@@ -2543,11 +3099,54 @@ class FieldPlot:
         bool
             ``True`` when successful, ``False`` when failed.
         """
-        self.oField.ModifyFieldPlot(self.name, self.surfacePlotInstruction)
+        try:
+            if self.seeding_faces:
+                if self.seeding_faces[0] != len(self.seeding_faces) - 1:
+                    for face in self.seeding_faces[1:]:
+                        if not isinstance(face, int):
+                            self._postprocessor.logger.error("Provide valid object id for seeding faces.")
+                            return False
+                        else:
+                            if face not in list(self._postprocessor._app.modeler.objects.keys()):
+                                self._postprocessor.logger.error("Invalid object id.")
+                                self.seeding_faces.remove(face)
+                                return False
+                    self.seeding_faces[0] = len(self.seeding_faces) - 1
+                if self.volume_indexes[0] != len(self.volume_indexes) - 1:
+                    for obj in self.volume_indexes[1:]:
+                        if not isinstance(obj, int):
+                            self._postprocessor.logger.error("Provide valid object id for in-volume object.")
+                            return False
+                        else:
+                            if obj not in list(self._postprocessor._app.modeler.objects.keys()):
+                                self._postprocessor.logger.error("Invalid object id.")
+                                self.volume_indexes.remove(obj)
+                                return False
+                    self.volume_indexes[0] = len(self.volume_indexes) - 1
+                if self.surfaces_indexes[0] != len(self.surfaces_indexes) - 1:
+                    for obj in self.surfaces_indexes[1:]:
+                        if not isinstance(obj, int):
+                            self._postprocessor.logger.error("Provide valid object id for surface object.")
+                            return False
+                        else:
+                            if obj not in list(self._postprocessor._app.modeler.objects.keys()):
+                                self._postprocessor.logger.error("Invalid object id.")
+                                self.surfaces_indexes.remove(obj)
+                                return False
+                    self.surfaces_indexes[0] = len(self.surfaces_indexes) - 1
+                self.oField.ModifyFieldPlot(self.name, self.surfacePlotInstructionLineTraces)
+            else:
+                self.oField.ModifyFieldPlot(self.name, self.surfacePlotInstruction)
+            return True
+        except:
+            return False
 
     @pyaedt_function_handler()
     def update_field_plot_settings(self):
         """Modify the field plot settings.
+
+        .. note::
+            This method is not available for field plot line traces.
 
         Returns
         -------
@@ -2685,8 +3284,7 @@ class FieldPlot:
             Path where image will be saved.
             The default is ``None`` which export file in working_directory.
         view : str, optional
-            View of the exported plot. Options are ``isometric``,
-            ``top``, ``front``, ``left``, and ``all``.
+           View to export. Options are ``"isometric"``, ``"xy"``, ``"xz"``, ``"yz"``.
         plot_mesh : bool, optional
             Plot mesh.
         scale_min : float, optional
@@ -2721,5 +3319,268 @@ class FieldPlot:
                 scale_max=scale_max,
             )
         else:
-            self._postprocessor.logger.info("This method wors only on CPython with PyVista")
+            self._postprocessor.logger.info("This method works only on CPython with PyVista")
             return False
+
+
+class VRTFieldPlot:
+    """Creates and edits VRT field plots for SBR+ and Creeping Waves.
+
+    Parameters
+    ----------
+    postprocessor : :class:`pyaedt.modules.PostProcessor.PostProcessor`
+    is_creeping_wave : bool
+        Whether it is a creeping wave model or not.
+    quantity_name : str, optional
+        Name of the plot or the name of the object.
+    max_frequency : str, optional
+        Maximum Frequency. The default is ``"1GHz"``.
+    ray_density : int, optional
+        Ray Density. The default is ``2``.
+    bounces : int, optional
+        Maximum number of bounces. The default is ``5``.
+    intrinsinc_list : dict, optional
+        Name of the intrinsic dictionary. The default is ``{}``.
+
+    """
+
+    def __init__(
+        self,
+        postprocessor,
+        is_creeping_wave=False,
+        quantity_name="QuantityName_SBR",
+        max_frequency="1GHz",
+        ray_density=2,
+        bounces=5,
+        intrinsinc_list={},
+    ):
+        self.is_creeping_wave = is_creeping_wave
+        self._postprocessor = postprocessor
+        self._ofield = postprocessor.ofieldsreporter
+        self.quantity_name = quantity_name
+        self.intrinsics = intrinsinc_list
+        self.name = "Field_Plot"
+        self.plot_folder = "Field_Plot"
+        self.max_frequency = max_frequency
+        self.ray_density = ray_density
+        self.number_of_bounces = bounces
+        self.multi_bounce_ray_density_control = False
+        self.mbrd_max_subdivision = 2
+        self.shoot_utd_rays = False
+        self.shoot_type = "All Rays"
+        self.start_index = 0
+        self.stop_index = 1
+        self.step_index = 1
+        self.is_plane_wave = True
+        self.incident_theta = "0deg"
+        self.incident_phi = "0deg"
+        self.vertical_polarization = False
+        self.custom_location = [0, 0, 0]
+        self.ray_box = None
+        self.ray_elevation = "0deg"
+        self.ray_azimuth = "0deg"
+        self.custom_coordinatesystem = 1
+        self.ray_cutoff = 40
+        self.sample_density = 10
+        self.irregular_surface_tolerance = 50
+
+    @property
+    def intrinsicVar(self):
+        """Intrinsic variable.
+
+        Returns
+        -------
+        list or dict
+            List or dictionary of the variables for the field plot.
+        """
+        var = ""
+        if isinstance(self.intrinsics, list):
+            l = 0
+            while l < len(self.intrinsics):
+                val = self.intrinsics[l + 1]
+                if ":=" in self.intrinsics[l] and isinstance(self.intrinsics[l + 1], list):
+                    val = self.intrinsics[l + 1][0]
+                ll = self.intrinsics[l].split(":=")
+                var += ll[0] + "='" + str(val) + "' "
+                l += 2
+        else:
+            for a in self.intrinsics:
+                var += a + "='" + str(self.intrinsics[a]) + "' "
+        return var
+
+    @pyaedt_function_handler()
+    def _create_args(self):
+        args = [
+            "NAME:" + self.name,
+            "UserSpecifyName:=",
+            0,
+            "UserSpecifyFolder:=",
+            0,
+            "QuantityName:=",
+            self.quantity_name,
+            "PlotFolder:=",
+            "Visual Ray Trace SBR",
+            "IntrinsicVar:=",
+            self.intrinsicVar,
+            "MaxFrequency:=",
+            self.max_frequency,
+            "RayDensity:=",
+            self.ray_density,
+            "NumberBounces:=",
+            self.number_of_bounces,
+            "Multi-Bounce Ray Density Control:=",
+            self.multi_bounce_ray_density_control,
+            "MBRD Max sub divisions:=",
+            self.mbrd_max_subdivision,
+            "Shoot UTD Rays:=",
+            self.shoot_utd_rays,
+            "ShootFilterType:=",
+            self.shoot_type,
+        ]
+        if self.shoot_type == "Rays by index":
+            args.extend(
+                [
+                    "start index:=",
+                    self.start_index,
+                    "stop index:=",
+                    self.stop_index,
+                    "index step:=",
+                    self.step_index,
+                ]
+            )
+        elif self.shoot_type == "Rays in box":
+            box_id = None
+            if isinstance(self.ray_box, int):
+                box_id = self.ray_box
+            elif isinstance(self.ray_box, str):
+                box_id = self._postprocessor._primitives._object_names_to_ids[self.ray_box]
+            else:
+                box_id = self.ray_box.id
+            args.extend("FilterBoxID:=", box_id)
+        elif self.shoot_type == "Single ray":
+            args.extend("Ray elevation:=", self.ray_elevation, "Ray azimuth:=", self.ray_azimuth)
+        args.append("LaunchFrom:=")
+        if self.is_plane_wave:
+            args.append("Launch from Plane-Wave")
+            args.append("Incident direction theta:=")
+            args.append(self.incident_theta)
+            args.append("Incident direction phi:=")
+            args.append(self.incident_phi)
+            args.append("Vertical Incident Polarization:=")
+            args.append(self.vertical_polarization)
+        else:
+            args.append("Launch from Custom")
+            args.append("LaunchFromPointID:=")
+            args.append(-1)
+            args.append("CustomLocationCoordSystem:=")
+            args.append(self.custom_coordinatesystem)
+            args.append("CustomLocation:=")
+            args.append(self.custom_location)
+        return args
+
+    @pyaedt_function_handler()
+    def _create_args_creeping(self):
+        args = [
+            "NAME:" + self.name,
+            "UserSpecifyName:=",
+            0,
+            "UserSpecifyFolder:=",
+            0,
+            "QuantityName:=",
+            self.quantity_name,
+            "PlotFolder:=",
+            "Visual Ray Trace CW",
+            "IntrinsicVar:=",
+            "",
+            "MaxFrequency:=",
+            self.max_frequency,
+            "SampleDensity:=",
+            self.sample_density,
+            "RayCutOff:=",
+            self.ray_cutoff,
+            "Irregular Surface Tolerance:=",
+            self.irregular_surface_tolerance,
+            "LaunchFrom:=",
+        ]
+        if self.is_plane_wave:
+            args.append("Launch from Plane-Wave")
+            args.append("Incident direction theta:=")
+            args.append(self.incident_theta)
+            args.append("Incident direction phi:=")
+            args.append(self.incident_phi)
+            args.append("Vertical Incident Polarization:=")
+            args.append(self.vertical_polarization)
+        else:
+            args.append("Launch from Custom")
+            args.append("LaunchFromPointID:=")
+            args.append(-1)
+            args.append("CustomLocationCoordSystem:=")
+            args.append(self.custom_coordinatesystem)
+            args.append("CustomLocation:=")
+            args.append(self.custom_location)
+        args.append("SBRRayDensity:=")
+        args.append(self.ray_density)
+        return args
+
+    @pyaedt_function_handler()
+    def create(self):
+        """Create a field plot.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        """
+        try:
+            if self.is_creeping_wave:
+                self._ofield.CreateFieldPlot(self._create_args_creeping(), "CreepingWave_VRT")
+            else:
+                self._ofield.CreateFieldPlot(self._create_args(), "VRT")
+            return True
+        except:
+            return False
+
+    @pyaedt_function_handler()
+    def update(self):
+        """Update the field plot.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+        """
+        try:
+            if self.is_creeping_wave:
+                self._ofield.ModifyFieldPlot(self.name, self._create_args_creeping())
+
+            else:
+                self._ofield.ModifyFieldPlot(self.name, self._create_args())
+            return True
+        except:
+            return False
+
+    @pyaedt_function_handler()
+    def delete(self):
+        """Delete the field plot."""
+        self._ofield.DeleteFieldPlot([self.name])
+        return True
+
+    @pyaedt_function_handler()
+    def export(self, path_to_hdm_file=None):
+        """Export the Visual Ray Tracing to ``hdm`` file.
+
+        Parameters
+        ----------
+        path_to_hdm_file : str, optional
+            Full path to output file. If ``None``, the file will be exported in working directory.
+
+        Returns
+        -------
+        str
+            Path to the file.
+        """
+        if not path_to_hdm_file:
+            path_to_hdm_file = os.path.join(self._postprocessor._app.working_directory, self.name + ".hdm")
+        self._ofield.ExportFieldPlot(self.name, False, path_to_hdm_file)
+        return path_to_hdm_file

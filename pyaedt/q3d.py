@@ -1,9 +1,10 @@
 """This module contains these classes: ``Q2d``, ``Q3d``, and ``QExtractor`."""
 from __future__ import absolute_import  # noreorder
 
-import os
-import warnings
 from collections import OrderedDict
+import os
+import re
+import warnings
 
 from pyaedt import is_ironpython
 from pyaedt import settings
@@ -13,8 +14,10 @@ from pyaedt.generic.constants import MATRIXOPERATIONSQ2D
 from pyaedt.generic.constants import MATRIXOPERATIONSQ3D
 from pyaedt.generic.general_methods import generate_unique_name
 from pyaedt.generic.general_methods import pyaedt_function_handler
+from pyaedt.modeler.geometry_operators import GeometryOperators as go
 from pyaedt.modules.Boundary import BoundaryObject
 from pyaedt.modules.Boundary import Matrix
+from pyaedt.modules.SetupTemplates import SetupKeys
 
 if not is_ironpython:
     try:
@@ -96,7 +99,15 @@ class QExtractor(FieldAnalysis3D, object):
         return self.matrices[0].sources(False)
 
     @pyaedt_function_handler()
-    def insert_reduced_matrix(self, operation_name, source_names=None, rm_name=None):
+    def insert_reduced_matrix(
+        self,
+        operation_name,
+        source_names=None,
+        rm_name=None,
+        new_net_name=None,
+        new_source_name=None,
+        new_sink_name=None,
+    ):
         """Insert a new reduced matrix.
 
         Parameters
@@ -108,6 +119,12 @@ class QExtractor(FieldAnalysis3D, object):
             is ``None``.
         rm_name : str, optional
             Name of the reduced matrix. The default is ``None``.
+        new_net_name : str, optional
+            Name of the new net. The default is ``None``.
+        new_source_name : str, optional
+            Name of the new source. The default is ``None``.
+        new_sink_name : str, optional
+            Name of the new sink. The default is ``None``.
 
         Returns
         -------
@@ -117,7 +134,17 @@ class QExtractor(FieldAnalysis3D, object):
         if not rm_name:
             rm_name = generate_unique_name(operation_name)
         matrix = Matrix(self, rm_name, operation_name)
-        if matrix.create(source_names):
+
+        if not new_net_name:
+            new_net_name = generate_unique_name("Net")
+
+        if not new_source_name:
+            new_source_name = generate_unique_name("Source")
+
+        if not new_sink_name:
+            new_sink_name = generate_unique_name("Sink")
+
+        if matrix.create(source_names, new_net_name, new_source_name, new_sink_name):
             self.matrices.append(matrix)
         return matrix
 
@@ -190,7 +217,7 @@ class QExtractor(FieldAnalysis3D, object):
 
         Parameters
         ----------
-        setup_name :str
+        setup_name : str
             Setup name.
         variation_string : str, optional
             Variation list. The default is ``""``.
@@ -368,6 +395,805 @@ class QExtractor(FieldAnalysis3D, object):
 
         return True
 
+    def export_matrix_data(
+        self,
+        file_name,
+        problem_type=None,
+        variations=None,
+        setup_name=None,
+        sweep=None,
+        reduce_matrix=None,
+        r_unit="ohm",
+        l_unit="nH",
+        c_unit="pF",
+        g_unit="mho",
+        freq=None,
+        freq_unit=None,
+        matrix_type=None,
+        export_AC_DC_res=False,
+        precision=None,
+        field_width=None,
+        use_sci_notation=True,
+        length_setting="Distributed",
+        length="1meter",
+    ):
+        """Export matrix data.
+
+        Parameters
+        ----------
+        file_name : str
+            Full path to save the matrix data to.
+            Options for file extensions are: ``*.m``, ``*.lvl``, ``*.csv``,
+            and ``*.txt``.
+        problem_type : str, optional
+            Problem type. The default value is ``None``, in which case ``"C"`` is
+            used. Options are ``"C"``, ``"AC RL"``, and ``"DC RL"``.
+        variations : str, optional
+            Design variation. The default is ``None``, in which case the
+            current nominal variation is used.
+        setup_name : str, optional
+            Setup name. The default value is ``None``, in which case the first
+            analysis setup is used.
+        sweep : str, optional
+            Solution frequency. The default is ``None``, in which case
+            the default adaptive is used.
+        reduce_matrix : str, optional
+            Name of the matrix to display.
+            Default value is ``"Original"``.
+        r_unit : str, optional
+            Resistance unit value.
+            The default value is ``"ohm"``.
+        l_unit : str, optional
+            Inductance unit value.
+            The default value is ``"nH"``.
+        c_unit : str, optional
+            Capacitance unit value.
+            Default value is ``"pF"``.
+        g_unit : str, optional
+            Conductance unit value.
+            The default value is ``"mho"``.
+        freq : str, optional
+            Selected frequency.
+            The default value is ``"0Hz"``.
+        freq_unit : str, optional
+            Frequency unit. The default value is ``None``, in which case the
+            default unit is used.
+        matrix_type : str, optional
+            Matrix Type.
+            Possible Values are "Maxwell", "Spice" and "Couple".
+            The default value is ``None``.
+        export_AC_DC_res : bool, optional
+            Whether to add the AC and DC res.
+            The default value is ``False``.
+        precision : int, optional
+            Precision format.
+            The default value is ``15``.
+        field_width : int, optional
+            Field Width.
+            The default value is ``20``.
+        use_sci_notation : bool, optional
+            Use sci notation.
+            Whether to use scientific notation.
+            The default value is ``True``.  When ``False``, the display format is used.
+        length_setting : str, optional
+            Length setting if the design si 2D.
+            The default value is ``"Distributed"``.
+        length : str, optional
+            Length.
+            The default value is ``"1meter"``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+        """
+        if os.path.splitext(file_name)[1] not in [".m", ".lvl", ".csv", ".txt"]:
+            self.logger.error("Extension is invalid. Possible extensions are *.m, *.lvl, *.csv, and *.txt.")
+            return False
+
+        if not self.modeler._is3d:
+            if problem_type is None:
+                problem_type = "CG"
+                if matrix_type is None:
+                    matrix_type = "Maxwell, Spice, Couple"
+                else:
+                    matrix_type_array = matrix_type.split(", ")
+                    if not [x for x in matrix_type_array if x in ["Maxwell", "Spice", "Couple"]]:
+                        self.logger.error("Invalid input matrix type. Possible values are Maxwell, Spice, and Couple.")
+                        return False
+            else:
+                problem_type_array = problem_type.split(", ")
+                if [x for x in problem_type_array if x in ["CG", "RL"]]:
+                    if "CG" in problem_type_array:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Spice, Couple"
+                    else:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Couple"
+                        else:
+                            matrix_type_array = matrix_type.split(", ")
+                            if [x for x in matrix_type_array if x == "Spice"]:
+                                self.logger.error("Spice can't be a matrix type if problem type is RL.")
+                                return False
+                else:
+                    self.logger.error("Invalid problem type. Possible values are CG and RL.")
+                    return False
+
+        else:
+            if problem_type is None:
+                problem_type = "C"
+                if matrix_type is None:
+                    matrix_type = "Maxwell, Spice, Couple"
+                else:
+                    matrix_type_array = matrix_type.split(", ")
+                    if not [x for x in matrix_type_array if x in ["Maxwell", "Spice", "Couple"]]:
+                        self.logger.error("Invalid input matrix type. Possible values are Maxwell, Spice, and Couple.")
+                        return False
+            else:
+                problem_type_array = problem_type.split(", ")
+                if [x for x in problem_type_array if x in ["C", "AC RL", "DC RL"]]:
+                    if "C" in problem_type_array:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Spice, Couple"
+                    else:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Couple"
+                        else:
+                            matrix_type_array = matrix_type.split(", ")
+                            if [x for x in matrix_type_array if x == "Spice"]:
+                                self.logger.error("Spice can't be a matrix type if problem type is AC RL or DC RL.")
+                                return False
+                else:
+                    self.logger.error("Invalid problem type. Possible values are C, AC RL, and DC RL.")
+                    return False
+
+        if variations is None:
+            if not self.available_variations.nominal_w_values_dict:
+                variations = ""
+            else:
+                variations_list = []
+                for x in range(0, len(self.available_variations.nominal_w_values_dict)):
+                    variation = "{}='{}'".format(
+                        list(self.available_variations.nominal_w_values_dict.keys())[x],
+                        list(self.available_variations.nominal_w_values_dict.values())[x],
+                    )
+                    variations_list.append(variation)
+                variations = ",".join(variations_list)
+
+        if setup_name is None:
+            setup_name = self.active_setup
+        elif setup_name != self.active_setup:
+            self.logger.error("Setup named: %s is invalid. Provide a valid analysis setup name.", setup_name)
+            return False
+        if sweep is None:
+            sweep = self.design_solutions.default_adaptive
+        else:
+            sweep_array = [x.split(": ")[1] for x in self.existing_analysis_sweeps]
+            if sweep.replace(" ", "") not in sweep_array:
+                self.logger.error("Sweep is invalid. Provide a valid sweep.")
+                return False
+        analysis_setup = setup_name + " : " + sweep.replace(" ", "")
+
+        if reduce_matrix is None:
+            reduce_matrix = "Original"
+        else:
+            if self.matrices:
+                if not [matrix for matrix in self.matrices if matrix.name == reduce_matrix]:
+                    self.logger.error("Matrix doesn't exist. Provide an existing matrix.")
+                    return False
+            else:
+                self.logger.error("List of matrix parameters is empty. Cannot export a valid matrix.")
+                return False
+
+        if r_unit is None:
+            r_unit = "ohm"
+        else:
+            if not r_unit.endswith("ohm"):
+                self.logger.error("Provide a valid unit for resistor.")
+                return False
+
+        if not l_unit.endswith("H"):
+            self.logger.error("Provide a valid unit for inductor.")
+            return False
+
+        if c_unit not in ["fF", "pF", "nF", "uF", "mF", "farad"]:
+            self.logger.error("Provide a valid unit for capacitance.")
+            return False
+
+        if g_unit is None:
+            g_unit = "mho"
+        else:
+            if g_unit not in [
+                "fSie",
+                "pSie",
+                "nSie",
+                "uSie",
+                "mSie",
+                "Sie",
+                "kSie",
+                "megSie",
+                "mho",
+                "perohm",
+                "apV",
+            ]:
+                self.logger.error("Provide a valid unit for conductance.")
+                return False
+
+        if freq is None:
+            freq = (
+                re.compile(r"(\d+)\s*(\w+)")
+                .match(
+                    self.modeler._odesign.GetChildObject("Analysis")
+                    .GetChildObject(setup_name)
+                    .GetPropValue("Adaptive Freq")
+                )
+                .groups()[0]
+            )
+        else:
+            if freq_unit != self.odesktop.GetDefaultUnit("Frequency") and freq_unit is not None:
+                freq = go.parse_dim_arg("{}{}".format(freq, freq_unit), self.odesktop.GetDefaultUnit("Frequency"))
+
+        if export_AC_DC_res is None:
+            export_AC_DC_res = False
+
+        if precision is None:
+            precision = 15
+        else:
+            if not isinstance(precision, int):
+                self.logger.error("Precision type must be integer.")
+                return False
+
+        if field_width is None:
+            field_width = 20
+        else:
+            if not isinstance(field_width, int):
+                self.logger.error("Field width type must be integer.")
+                return False
+
+        if use_sci_notation is None:
+            use_sci_notation = 1
+        else:
+            if use_sci_notation:
+                use_sci_notation = 1
+            else:
+                use_sci_notation = 0
+
+        if not self.modeler._is3d:
+            if length_setting not in ["Distributed", "Lumped"]:
+                self.logger.error("Length setting is invalid.")
+                return False
+            if length is None:
+                length = "1meter"
+            else:
+                if re.compile(r"(\d+)\s*(\w+)").match(length).groups()[1] not in [
+                    "fm",
+                    "pm",
+                    "nm",
+                    "um",
+                    "mm",
+                    "cm",
+                    "dm",
+                    "meter",
+                    "km",
+                    "copper_oz",
+                    "ft",
+                    "in",
+                    "mil",
+                    "mile",
+                    "mileNaut",
+                    "mileTerr",
+                    "uin",
+                    "yd",
+                ]:
+                    self.logger.error("Unit length is invalid.")
+                    return False
+            try:
+                self.odesign.ExportMatrixData(
+                    file_name,
+                    problem_type,
+                    variations,
+                    analysis_setup,
+                    reduce_matrix,
+                    r_unit,
+                    l_unit,
+                    c_unit,
+                    g_unit,
+                    freq,
+                    length_setting,
+                    length,
+                    matrix_type,
+                    export_AC_DC_res,
+                    precision,
+                    field_width,
+                    use_sci_notation,
+                )
+                return True
+            except:
+                self.logger.error("Export of matrix data was unsuccessful.")
+                return False
+        else:
+            try:
+                self.odesign.ExportMatrixData(
+                    file_name,
+                    problem_type,
+                    variations,
+                    analysis_setup,
+                    reduce_matrix,
+                    r_unit,
+                    l_unit,
+                    c_unit,
+                    g_unit,
+                    freq,
+                    matrix_type,
+                    export_AC_DC_res,
+                    precision,
+                    field_width,
+                    use_sci_notation,
+                )
+                return True
+            except:
+                self.logger.error("Export of matrix data was unsuccessful.")
+                return False
+
+    def export_equivalent_circuit(
+        self,
+        file_name,
+        setup_name=None,
+        sweep=None,
+        variations=None,
+        matrix_name=None,
+        num_cells=2,
+        user_changed_settings=True,
+        include_cap=True,
+        include_cond=True,
+        include_dcr=False,
+        include_dcl=False,
+        include_acr=False,
+        include_acl=False,
+        include_r=True,
+        include_l=True,
+        add_resistance=False,
+        parse_pin_names=False,
+        export_distributed=True,
+        lumped_length="1meter",
+        rise_time_value=None,
+        rise_time_unit=None,
+        coupling_limit_type=None,
+        cap_limit=None,
+        ind_limit=None,
+        res_limit=None,
+        cond_limit=None,
+        model_name=None,
+        freq=0,
+        file_type="HSPICE",
+        include_cpp=False,
+    ):
+        """Export matrix data.
+
+        Parameters
+        ----------
+        file_name : str
+            Full path for saving the matrix data to.
+            Options for file extensions are CIR, SML, SP, PKG, SPC, LIB, CKT, BSP,
+            DML, and ICM.
+        setup_name : str, optional
+            Setup name.
+            The default value is ``None``, in which case the first analysis setup is used.
+        sweep : str, optional
+            Solution frequency. The default is ``None``, in which case
+            the default adaptive is used.
+        variations : list or str, optional
+            Design variation. The default is ``None``, in which case the
+            current nominal variation is used. If you provide a
+            design variation, use the format ``{Name}:{Value}``.
+        matrix_name : str, optional
+            Name of the matrix to show. The default is ``"Original"``.
+        num_cells : int, optional
+            Number of cells in export.
+            Default value is 2.
+        user_changed_settings : bool, optional
+            Whether user has changed settings or not, defaulted to True.
+            Default value is False.
+        include_cap : bool, optional
+            Include Capacitance.
+            Default value is True.
+        include_cond : bool, optional
+            Include Conductance.
+            Default value is True.
+        coupling_limit_type : int, optional
+            Coupling limit types.
+            Values can be: ``"By Value" -> 0`` or ``"By Fraction Of Self Term" -> 1``.
+            If None, no coupling limits are set.
+            Default value is None.
+        include_dcr : bool, optional
+            Flag indicates whether to export DC resistance matrix.
+            Default value is ``False``.
+        include_dcl : bool, optional
+            Flag indicates whether to export DC Inductance matrix.
+            Default value is ``False``.
+        include_acr : bool, optional
+            Flag indicates whether to export AC resistance matrix.
+            Default value is ``False``.
+        include_acl : bool, optional
+            Flag indicates whether to export AC inductance matrix.
+            Default value is ``False``.
+        include_r : bool, optional
+            Flag indicates whether to export resistance.
+            Default value is True.
+        include_l : bool, optional
+            Flag indicates whether to export inductance.
+            Default value is True.
+        add_resistance : bool, optional
+            Adds the DC and AC resistance.
+            Default value is True.
+        parse_pin_names : bool, optional
+            Parse pin names.
+            Default value is False.
+        export_distributed : bool, optional
+            Flag to tell whether to export in distributed mode or Lumped mode.
+            Default value is True.
+        lumped_length : str, optional
+            Length of the design.
+            Default value is 1 meter.
+        rise_time_value : str, optional
+            Rise time to calculate the number of cells.
+            Default value is 1e-09.
+        rise_time_unit : str, optional
+            Rise time unit.
+            Default is s.
+        cap_limit : str, optional
+            Capacitance limit.
+            Default value is 1pF if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        cond_limit : str, optional
+            Conductance limit.
+            Default value is 1mSie if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        res_limit : str, optional
+            Resistance limit.
+            Default value is 1ohm if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        ind_limit : str, optional
+            Inductance limit.
+            Default value is 1nH if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        model_name : str, optional
+            Model name or name of the sub circuit (Optional).
+            If None then file_name is considered as model name.
+        freq : str, optional
+            Sweep frequency in Hz.
+            Default value is 0.
+        file_type : str, optional
+            The type of file format.
+            Type of HSPICE file format. (All HSPICE file formats have the same extension,
+            which is ``*.sp``.) Options are:
+            "Hspice": simple HSPICE file format.
+            "Welement": Nexxim/HSPICE W Element file format
+            "RLGC": Nexxim/HSPICE RLGC W Element file format
+            Default value is Hspice.
+        include_cpp : bool, optional
+            Whether to include chip package control.
+            Default value is False.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+
+        >>> oModule.ExportCircuit
+
+        Examples
+        --------
+        >>> from pyaedt import Q3d
+        >>> aedtapp = Q3d()
+        >>> box = aedtapp.modeler.create_box([30, 30, 30], [10, 10, 10], name="mybox")
+        >>> net = aedtapp.assign_net(box, "my_net")
+        >>> source = aedtapp.assign_source_to_objectface(box.bottom_face_z.id, axisdir=0,
+        ...     source_name="Source1", net_name=net.name)
+        >>> sink = aedtapp.assign_sink_to_objectface(box.top_face_z.id, axisdir=0,
+        ...     sink_name="Sink1", net_name=net.name)
+        >>> aedtapp["d"] = "20mm"
+        >>> aedtapp.modeler.duplicate_along_line(objid="Box1",vector=[0, "d", 0])
+        >>> mysetup = aedtapp.create_setup()
+        >>> aedtapp.analyze_setup(mysetup.name)
+        >>> aedtapp.export_equivalent_circuit(file_name="test_export_circuit.cir",
+        ...     setup_name=mysetup.name,
+        ...     sweep="LastAdaptive",
+        ...     variations=["d: 20mm"]
+        """
+        if os.path.splitext(file_name)[1] not in [
+            ".cir",
+            ".sml",
+            ".sp",
+            ".pkg",
+            ".spc",
+            ".lib",
+            ".ckt",
+            ".bsp",
+            ".dml",
+            ".icm",
+        ]:
+            self.logger.error(
+                "Extension is invalid. Possible extensions are .cir, .sml, .sp, .pkg, .spc,"
+                " .lib, .ckt, .bsp, .dml, .icm."
+            )
+            return False
+
+        if setup_name is None:
+            setup_name = self.active_setup
+        elif setup_name != self.active_setup:
+            self.logger.error("Setup named: %s is invalid. Provide a valid analysis setup name.", setup_name)
+            return False
+        if sweep is None:
+            sweep = self.design_solutions.default_adaptive
+        else:
+            sweep_array = [x.split(": ")[1] for x in self.existing_analysis_sweeps]
+            if sweep.replace(" ", "") not in sweep_array:
+                self.logger.error("Sweep is invalid. Provide a valid sweep.")
+                return False
+        analysis_setup = setup_name + " : " + sweep.replace(" ", "")
+
+        if variations is None:
+            if not self.available_variations.nominal_w_values_dict:
+                variations = ""
+            else:
+                variations_list = []
+                for x in range(0, len(self.available_variations.nominal_w_values_dict)):
+                    variation = "{}='{}'".format(
+                        list(self.available_variations.nominal_w_values_dict.keys())[x],
+                        list(self.available_variations.nominal_w_values_dict.values())[x],
+                    )
+                    variations_list.append(variation)
+                variations = ",".join(variations_list)
+        else:
+            variations_list = []
+            if not isinstance(variations, list):
+                self.logger.error("Variations must be provided as a list.")
+                return False
+            for x in range(0, len(variations)):
+                name = variations[x].replace(" ", "").split(":")[0]
+                value = variations[x].replace(" ", "").split(":")[1]
+                solved_variations = self.post.get_solution_data(variations={name: [value]})
+
+                if not solved_variations or not solved_variations.variations[0]:
+                    self.logger.error("Provided variation doesn't exist.")
+                    return False
+                variation = "{}='{}'".format(name, value)
+                variations_list.append(variation)
+            variations = ",".join(variations_list)
+
+        if matrix_name is None:
+            matrix_name = "Original"
+        else:
+            if self.matrices:
+                if not [matrix for matrix in self.matrices if matrix.name == matrix_name]:
+                    self.logger.error("Matrix doesn't exist. Provide an existing matrix.")
+                    return False
+            else:
+                self.logger.error("List of matrix parameters is empty. Cannot export a valid matrix.")
+                return False
+
+        coupling_limits = ["NAME:CouplingLimits", "CouplingLimitType:="]
+        if coupling_limit_type:
+            if coupling_limit_type not in [0, 1]:
+                self.logger.error('Possible values are 0 = "By Value" or 1 = "By Fraction Of Self Term".')
+                return False
+            elif coupling_limit_type == 0:
+                coupling_limit_value = "By Value"
+            elif coupling_limit_type == 1:
+                coupling_limit_value = "By Fraction Of Self Term"
+
+            coupling_limits.append(coupling_limit_value)
+
+            if cond_limit is None and coupling_limit_type == 0:
+                cond_limit = "1mSie"
+            elif cond_limit is None and coupling_limit_type == 1:
+                cond_limit = "0.01"
+            elif cond_limit is not None:
+                if decompose_variable_value(cond_limit)[1] not in [
+                    "fSie",
+                    "pSie",
+                    "nSie",
+                    "uSie",
+                    "mSie",
+                    "sie",
+                    "kSie",
+                    "megSie",
+                    "mho",
+                    "perohm",
+                ]:
+                    self.logger.error("Invalid conductance unit.")
+                    return False
+
+            coupling_limits.append("CondLimit:=")
+            coupling_limits.append(cond_limit)
+
+            if cap_limit is None and coupling_limit_type == 0:
+                cap_limit = "1pF"
+            elif cap_limit is None and coupling_limit_type == 1:
+                cap_limit = "0.01"
+            elif cap_limit is not None:
+                if decompose_variable_value(cap_limit)[1] not in ["fF", "pF", "nF", "uF", "mF", "farad"]:
+                    self.logger.error("Invalid capacitance unit.")
+                    return False
+
+            coupling_limits.append("CapLimit:=")
+            coupling_limits.append(cap_limit)
+
+            if ind_limit is None and coupling_limit_type == 0:
+                ind_limit = "1nH"
+            elif ind_limit is None and coupling_limit_type == 1:
+                ind_limit = "0.01"
+            elif ind_limit is not None:
+                if decompose_variable_value(ind_limit)[1] not in ["fH", "pH", "nH", "uH", "mH", "H"]:
+                    self.logger.error("Invalid inductance unit.")
+                    return False
+
+            coupling_limits.append("IndLimit:=")
+            coupling_limits.append(ind_limit)
+
+            if res_limit is None and coupling_limit_type == 0:
+                res_limit = "1ohm"
+            elif res_limit is None and coupling_limit_type == 1:
+                res_limit = "0.01"
+            elif res_limit is not None:
+                if decompose_variable_value(res_limit)[1] not in ["uOhm", "mOhm", "ohm", "kOhm", "megOhm", "GOhm"]:
+                    self.logger.error("Invalid resistance unit.")
+                    return False
+
+            coupling_limits.append("ResLimit:=")
+            coupling_limits.append(res_limit)
+        else:
+            coupling_limit_value = "None"
+            coupling_limits.append(coupling_limit_value)
+
+        if model_name is None:
+            model_name = self.project_name
+        elif model_name != self.project_name:
+            self.logger.error("Invalid project name.")
+            return False
+
+        if decompose_variable_value(lumped_length)[1] not in [
+            "cm",
+            "dm",
+            "fm",
+            "ft",
+            "in",
+            "km",
+            "light year",
+            "meter",
+            "mil",
+            "mile",
+            "mileNaut",
+            "mileTerr",
+            "mm",
+            "nm",
+            "pm",
+            "uin",
+            "um",
+            "yd",
+        ]:
+            self.logger.error("Invalid lumped length unit.")
+            return False
+
+        if rise_time_value is None:
+            rise_time_value = "1e-9"
+
+        if rise_time_unit:
+            if rise_time_unit not in ["fs", "ps", "ns", "us", "ms", "s", "min", "hour", "day"]:
+                self.logger.error("Invalid rise time unit.")
+                return False
+        else:
+            rise_time_unit = "s"
+
+        rise_time = rise_time_value + rise_time_unit
+
+        if file_type.lower() not in ["hspice", "welement", "rlgc"]:
+            self.logger.error("Invalid file type, possible solutions are Hspice, Welement, RLGC.")
+            return False
+
+        if include_cpp:
+            if settings.aedt_version >= "2023.2":
+                if not [x for x in [include_dcr, include_dcl, include_acr, include_acl, add_resistance] if x]:
+                    self.logger.error(
+                        "Select DC/AC resistance/inductance to include "
+                        "the chip package control data in export circuit."
+                    )
+                    return False
+                else:
+                    circuit_settings = self.oanalysis.GetCircuitSettings()
+                    for setting in circuit_settings:
+                        if isinstance(setting, tuple):
+                            if setting[0] == "NAME:CPPInfo":
+                                cpp_settings = setting
+        else:
+            include_cpp = False
+            cpp_settings = []
+
+        if self.modeler._is3d:
+            try:
+                self.oanalysis.ExportCircuit(
+                    analysis_setup,
+                    variations,
+                    file_name,
+                    [
+                        "NAME:CircuitData",
+                        "MatrixName:=",
+                        matrix_name,
+                        "NumberOfCells:=",
+                        str(num_cells),
+                        "UserHasChangedSettings:=",
+                        user_changed_settings,
+                        "IncludeCap:=",
+                        include_cap,
+                        "IncludeCond:=",
+                        include_cond,
+                        [coupling_limits],
+                        "IncludeDCR:=",
+                        include_dcr,
+                        "IncudeDCL:=",
+                        include_dcl,
+                        "IncludeACR:=",
+                        include_acr,
+                        "IncludeACL:=",
+                        include_acl,
+                        "ADDResistance:=",
+                        add_resistance,
+                        "ParsePinNames:=",
+                        parse_pin_names,
+                        "IncludeCPP:=",
+                        include_cpp,
+                        cpp_settings,
+                    ],
+                    model_name,
+                    freq,
+                )
+                return True
+            except:
+                self.logger.error("Export of equivalent circuit was unsuccessful.")
+                return False
+        else:
+            try:
+                self.oanalysis.ExportCircuit(
+                    analysis_setup,
+                    variations,
+                    file_name,
+                    [
+                        "NAME:CircuitData",
+                        "MatrixName:=",
+                        matrix_name,
+                        "NumberOfCells:=",
+                        str(num_cells),
+                        "UserHasChangedSettings:=",
+                        user_changed_settings,
+                        "IncludeCap:=",
+                        include_cap,
+                        "IncludeCond:=",
+                        include_cond,
+                        [coupling_limits],
+                        "IncludeR:=",
+                        include_r,
+                        "IncludeL:=",
+                        include_l,
+                        "ExportDistributed:=",
+                        export_distributed,
+                        "LumpedLength:=",
+                        lumped_length,
+                        "RiseTime:=",
+                        rise_time,
+                    ],
+                    model_name,
+                    file_type,
+                    freq,
+                )
+                return True
+            except:
+                self.logger.error("Export of equivalent circuit was unsuccessful.")
+                return False
+
 
 class Q3d(QExtractor, object):
     """Provides the Q3D app interface.
@@ -393,10 +1219,11 @@ class Q3d(QExtractor, object):
         Name of the setup to use as the nominal. The default is
         ``None``, in which case the active setup is used or nothing
         is used.
-    specified_version : str, optional
+    specified_version : str, int, float, optional
         Version of AEDT to use. The default is ``None``, in which case
         the active version or latest installed version is used.
         This parameter is ignored when Script is launched within AEDT.
+        Examples of input values are ``232``, ``23.2``,``2023.2``,``"2023.2"``.
     non_graphical : bool, optional
         Whether to launch AEDT in non-graphical mode. The default
         is ``False``, in which case AEDT is launched in graphical mode.
@@ -468,6 +1295,9 @@ class Q3d(QExtractor, object):
         )
         self.MATRIXOPERATIONS = MATRIXOPERATIONSQ3D()
 
+    def _init_from_design(self, *args, **kwargs):
+        self.__init__(*args, **kwargs)
+
     @property
     def nets(self):
         """Nets in a Q3D project.
@@ -487,6 +1317,51 @@ class Q3d(QExtractor, object):
             if isinstance(i, (list, tuple)):
                 net_names.append(i[0].split(":")[1])
         return net_names
+
+    @pyaedt_function_handler()
+    def delete_all_nets(self):
+        """Delete all nets in the design."""
+        net_names = self.nets[::]
+        for i in self.boundaries[::]:
+            if i.name in net_names:
+                i.delete()
+        return True
+
+    @pyaedt_function_handler()
+    def objects_from_nets(self, nets, materials=None):
+        """Find the objects that belong to one or more nets. You can filter by materials.
+
+        Parameters
+        ----------
+        nets : str, list
+            One or more nets to search for. The search is case-insensitive.
+        materials : str, list, optional
+            One or more materials for filtering the net objects. The default
+            is ``None``. The search is case insensitive.
+
+        Returns
+        -------
+        dict
+            Dictionary of net name and objects that belongs to it.
+        """
+        if isinstance(nets, str):
+            nets = [nets]
+        if isinstance(materials, str):
+            materials = [materials]
+        elif not materials:
+            materials = []
+        materials = [i.lower() for i in materials]
+        objects = {}
+        for net in nets:
+            for bound in self.boundaries:
+                if net.lower() == bound.name.lower() and "Net" in bound.type:
+                    obj_list = self.modeler.convert_to_selections(bound.props.get("Objects", []), True)
+                    if materials:
+                        obj_list = [
+                            self.modeler[i].name for i in obj_list if self.modeler[i].material_name.lower() in materials
+                        ]
+                    objects[net] = obj_list
+        return objects
 
     @pyaedt_function_handler()
     def net_sources(self, net_name):
@@ -575,7 +1450,7 @@ class Q3d(QExtractor, object):
             )
             props = OrderedDict({"Objects": objects})
             bound = BoundaryObject(self, net, props, "SignalNet")
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
         if new_nets:
             self.logger.info("{} Nets have been identified: {}".format(len(new_nets), ", ".join(new_nets)))
         else:
@@ -628,13 +1503,118 @@ class Q3d(QExtractor, object):
             type_bound = "FloatingNet"
         bound = BoundaryObject(self, net_name, props, type_bound)
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
+            return bound
+        return False
+
+    @pyaedt_function_handler()
+    def source(self, objects=None, axisdir=0, name=None, net_name=None, terminal_type="voltage"):
+        """Generate a source on a face of an object or a group of faces or face ids.
+        The face ID is selected based on the axis direction. It is the face that
+        has the maximum/minimum in this axis direction.
+
+        Parameters
+        ----------
+        objects : str, int or list or :class:`pyaedt.modeler.cad.object3d.Object3d`
+            Name of the object or face ID or face ID list.
+        axisdir : int, optional
+            Initial axis direction. Options are ``0`` to ``5``. The default is ``0``.
+        name : str, optional
+            Name of the source. The default is ``None``.
+        net_name : str, optional
+            Name of the net. The default is ``None``, in which case the ``object_name`` is considered.
+        terminal_type : str
+            Type of the terminal. Options are ``voltage`` and ``current``. The default is ``voltage``.
+
+        Returns
+        -------
+        :class:`pyaedt.modules.Boundary.BoundaryObject`
+            Source object.
+
+        References
+        ----------
+
+        >>> oModule.AssignSource
+        """
+        return self._assign_source_or_sink(objects, axisdir, name, net_name, terminal_type, "Source")
+
+    @pyaedt_function_handler()
+    def sink(self, objects=None, axisdir=0, name=None, net_name=None, terminal_type="voltage"):
+        """Generate a sink on a face of an object or a group of faces or face ids.
+
+        The face ID is selected based on the axis direction. It is the face that
+        has the maximum/minimum in this axis direction.
+
+        Parameters
+        ----------
+        objects : str, int or list or :class:`pyaedt.modeler.cad.object3d.Object3d`
+            Name of the object or face ID or face ID list.
+        axisdir : int, optional
+            Initial axis direction. Options are ``0`` to ``5``. The default is ``0``.
+        name : str, optional
+            Name of the source. The default is ``None``.
+        net_name : str, optional
+            Name of the net. The default is ``None``, in which case the ``object_name`` is considered.
+        terminal_type : str
+            Type of the terminal. Options are ``voltage`` and ``current``. The default is ``voltage``.
+
+        Returns
+        -------
+        :class:`pyaedt.modules.Boundary.BoundaryObject`
+            Sink object.
+
+        References
+        ----------
+
+        >>> oModule.AssignSource
+        """
+        return self._assign_source_or_sink(objects, axisdir, name, net_name, terminal_type, "Sink")
+
+    @pyaedt_function_handler()
+    def _assign_source_or_sink(self, objects, axisdir, name, net_name, terminal_type, exc_type):
+        if not name:
+            name = generate_unique_name(exc_type)
+        objects = self.modeler.convert_to_selections(objects, True)
+        sheets = []
+        is_face = True
+        for object_name in objects:
+            if isinstance(object_name, str) and object_name in self.modeler.solid_names:
+                sheets.append(self.modeler._get_faceid_on_axis(object_name, axisdir))
+                if not net_name:
+                    for net in self.nets:
+                        if object_name in self.objects_from_nets(net):
+                            net_name = net
+            elif isinstance(object_name, str):
+                is_face = False
+                sheets.append(object_name)
+            else:
+                sheets.append(object_name)
+
+        if is_face:
+            props = OrderedDict({"Faces": sheets})
+        else:
+            props = OrderedDict({"Objects": sheets})
+
+        if terminal_type == "current":
+            terminal_str = "UniformCurrent"
+        else:
+            terminal_str = "ConstantVoltage"
+
+        props["TerminalType"] = terminal_str
+        if net_name:
+            props["Net"] = net_name
+        bound = BoundaryObject(self, name, props, exc_type)
+        if bound.create():
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
     @pyaedt_function_handler()
     def assign_source_to_objectface(self, object_name, axisdir=0, source_name=None, net_name=None):
         """Generate a source on a face of an object.
+
+        .. deprecated:: 0.6.70
+           Use :func:`source` method instead.
 
         The face ID is selected based on the axis direction. It is the face that
         has the maximum/minimum in this axis direction.
@@ -660,39 +1640,30 @@ class Q3d(QExtractor, object):
 
         >>> oModule.AssignSource
         """
-        object_name = self.modeler.convert_to_selections(object_name, True)[0]
-        if isinstance(object_name, int):
-            a = object_name
-        else:
-            a = self.modeler._get_faceid_on_axis(object_name, axisdir)
-        if not source_name:
-            source_name = generate_unique_name("Source")
-        if not net_name:
-            net_name = object_name
-        if a:
-            props = OrderedDict(
-                {"Faces": [a], "ParentBndID": object_name, "TerminalType": "ConstantVoltage", "Net": net_name}
-            )
-            bound = BoundaryObject(self, source_name, props, "Source")
-            if bound.create():
-                self.boundaries.append(bound)
-                return bound
-        return False
+        warnings.warn("Use :func:`source` method instead.", DeprecationWarning)
+        return self.source(objects=object_name, axisdir=0, name=source_name, net_name=net_name)
 
     @pyaedt_function_handler()
-    def assign_source_to_sheet(self, sheetname, objectname=None, netname=None, sourcename=None):
+    def assign_source_to_sheet(
+        self, sheetname, objectname=None, netname=None, sourcename=None, terminal_type="voltage"
+    ):
         """Generate a source on a sheet.
+
+        .. deprecated:: 0.6.70
+           Use :func:`source` method instead.
 
         Parameters
         ----------
-        sheetname : str
-            Name of the sheet to create the source on.
+        sheetname : str, int or list
+            Name of the sheets to create the source on.
         objectname :  str, optional
             Name of the parent object. The default is ``None``.
         netname : str, optional
             Name of the net. The default is ``None``.
         sourcename : str,  optional
             Name of the source. The default is ``None``.
+        terminal_type : str
+            Type of the terminal. Options are ``voltage`` and ``current``. The default is ``voltage``.
 
         Returns
         -------
@@ -704,21 +1675,8 @@ class Q3d(QExtractor, object):
 
         >>> oModule.AssignSource
         """
-        if not sourcename:
-            sourcename = generate_unique_name("Source")
-        sheetname = self.modeler.convert_to_selections(sheetname, True)
-        props = OrderedDict({"Objects": [sheetname]})
-        if objectname:
-            props["ParentBndID"] = objectname
-        props["TerminalType"] = "ConstantVoltage"
-        if netname:
-            props["Net"] = netname
-        props = OrderedDict({"Objects": sheetname, "TerminalType": "ConstantVoltage", "Net": netname})
-        bound = BoundaryObject(self, sourcename, props, "Source")
-        if bound.create():
-            self.boundaries.append(bound)
-            return bound
-        return False
+        warnings.warn("Use :func:`source` method instead.", DeprecationWarning)
+        return self.source(objects=sheetname, name=sourcename, net_name=netname, terminal_type=terminal_type)
 
     @pyaedt_function_handler()
     def assign_sink_to_objectface(self, object_name, axisdir=0, sink_name=None, net_name=None):
@@ -764,12 +1722,12 @@ class Q3d(QExtractor, object):
             )
             bound = BoundaryObject(self, sink_name, props, "Sink")
             if bound.create():
-                self.boundaries.append(bound)
+                self._boundaries[bound.name] = bound
                 return bound
         return False
 
     @pyaedt_function_handler()
-    def assign_sink_to_sheet(self, sheetname, objectname=None, netname=None, sinkname=None):
+    def assign_sink_to_sheet(self, sheetname, objectname=None, netname=None, sinkname=None, terminal_type="voltage"):
         """Generate a sink on a sheet.
 
         Parameters
@@ -782,6 +1740,8 @@ class Q3d(QExtractor, object):
             Name of the net. The default is ``None``.
         sinkname : str, optional
             Name of the sink. The default is ``None``.
+        terminal_type : str
+            Type of the terminal. Options are ``voltage`` and ``current``. The default is ``voltage``.
 
         Returns
         -------
@@ -794,37 +1754,48 @@ class Q3d(QExtractor, object):
         >>> oModule.AssignSink
         """
         if not sinkname:
-            sinkname = generate_unique_name("Source")
-        sheetname = self.modeler.convert_to_selections(sheetname, True)
-        props = OrderedDict({"Objects": [sheetname]})
+            sinkname = generate_unique_name("Sink")
+        sheetname = self.modeler.convert_to_selections(sheetname, True)[0]
+        if isinstance(sheetname, int):
+            props = OrderedDict({"Faces": [sheetname]})
+        else:
+            props = OrderedDict({"Objects": [sheetname]})
         if objectname:
             props["ParentBndID"] = objectname
-        props["TerminalType"] = "ConstantVoltage"
+
+        if terminal_type == "current":
+            terminal_str = "UniformCurrent"
+        else:
+            terminal_str = "ConstantVoltage"
+
+        props["TerminalType"] = terminal_str
+
         if netname:
             props["Net"] = netname
 
-        props = OrderedDict({"Objects": sheetname, "TerminalType": "ConstantVoltage", "Net": netname})
         bound = BoundaryObject(self, sinkname, props, "Sink")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
     @pyaedt_function_handler()
-    def create_frequency_sweep(self, setupname, units, freqstart, freqstop, freqstep=None, sweepname=None):
+    def create_frequency_sweep(self, setupname, units=None, freqstart=0, freqstop=1, freqstep=None, sweepname=None):
         """Create a frequency sweep.
 
         Parameters
         ----------
         setupname : str
             Name of the setup that is attached to the sweep.
-        units : str
+        units : str, optional
             Units of the frequency. For example, ``"MHz"`` or
-            ``"GHz"``. The default is ``"GHz"``.
-        freqstart :
-            Starting frequency of the sweep.
-        freqstop :
-            Stopping frequency of the sweep.
+            ``"GHz"``. The default is ``None`` which takes the Default Desktop units.
+        freqstart : float, str, optional
+            Starting frequency of the sweep. The default is ``0``.
+             If a unit is passed with the number, such as ``"1MHz"``, the unit is ignored.
+        freqstop : float, str, optional
+            Stopping frequency of the sweep. The default is ``1``.
+            If a unit is passed with the number, such as``"1MHz"``, the unit is ignored.
         freqstep : optional
             Frequency step point.
         sweepname : str, optional
@@ -833,8 +1804,8 @@ class Q3d(QExtractor, object):
 
         Returns
         -------
-        bool
-            ``True`` when successful, ``False`` when failed.
+        :class:`pyaedt.modules.SolveSweeps.SweepHFSS3DLayout`
+            Sweep object when successful, ``False`` when failed.
 
         References
         ----------
@@ -854,15 +1825,10 @@ class Q3d(QExtractor, object):
                         self.logger.warning("Sweep %s is already present. Rename and retry.", sweepname)
                         return False
                 sweepdata = setupdata.add_sweep(sweepname, "Discrete")
-                sweepdata.props["RangeStart"] = str(freqstart) + "GHz"
-                if not freqstop:
-                    freqstop = freqstart
-                if not freqstep:
-                    freqstep = (freqstop - freqstart) / 11
-                    if freqstep == 0:
-                        freqstep = freqstart
-                sweepdata.props["RangeEnd"] = str(freqstop) + "GHz"
-                sweepdata.props["RangeStep"] = str(freqstep) + "GHz"
+                sweepdata.props["RangeStart"] = self.value_with_units(freqstart, units, "Frequency")
+                sweepdata.props["RangeEnd"] = self.value_with_units(freqstop, units, "Frequency")
+                sweepdata.props["RangeStep"] = self.value_with_units(freqstep, units, "Frequency")
+
                 sweepdata.props["SaveFields"] = False
                 sweepdata.props["SaveRadFields"] = False
                 sweepdata.props["Type"] = "Interpolating"
@@ -900,7 +1866,7 @@ class Q3d(QExtractor, object):
 
         Returns
         -------
-        SweepQ3D
+        SweepMatrix
             Sweep option.
 
         References
@@ -974,7 +1940,7 @@ class Q3d(QExtractor, object):
             if not magnetic_threshold:
                 magnetic_threshold = 1.01
 
-            if not is_ironpython and not settings.use_grpc_api:
+            if not is_ironpython and not self.desktop_class.is_grpc_api:
                 insulator_threshold = np.longdouble(insulator_threshold)
                 perfect_conductor_threshold = np.longdouble(perfect_conductor_threshold)
                 magnetic_threshold = np.longdouble(magnetic_threshold)
@@ -983,6 +1949,54 @@ class Q3d(QExtractor, object):
             return True
         except:
             return False
+
+    @pyaedt_function_handler()
+    def create_setup(self, setupname="MySetupAuto", **kwargs):
+        """Create an analysis setup for Q3D Extractor.
+
+        Optional arguments are passed along with the ``setupname`` parameter.
+
+
+        Parameters
+        ----------
+
+        setupname : str, optional
+            Name of the setup. The default is "Setup1".
+        **kwargs : dict, optional
+            Available keys depend on the setup chosen.
+            For more information, see :doc:`../SetupTemplatesQ3D`.
+
+        Returns
+        -------
+        :class:`pyaedt.modules.SolveSetup.SetupQ3D`
+            3D Solver Setup object.
+
+        References
+        ----------
+
+        >>> oModule.InsertSetup
+
+        Examples
+        --------
+
+        >>> from pyaedt import Q3d
+        >>> app = Q3d()
+        >>> app.create_setup(setupname="Setup1", DC__MinPass=2)
+
+        """
+        setuptype = self.design_solutions.default_setup
+
+        if "props" in kwargs:
+            return self._create_setup(setupname=setupname, setuptype=setuptype, props=kwargs["props"])
+        else:
+            setup = self._create_setup(setupname=setupname, setuptype=setuptype)
+        setup.auto_update = False
+        for arg_name, arg_value in kwargs.items():
+            if setup[arg_name] is not None:
+                setup[arg_name] = arg_value
+        setup.auto_update = True
+        setup.update()
+        return setup
 
 
 class Q2d(QExtractor, object):
@@ -1009,10 +2023,11 @@ class Q2d(QExtractor, object):
         Name of the setup to use as the nominal. The default is
         ``None``, in which case the active setup is used or
         nothing is used.
-    specified_version : str, optional
+    specified_version : str, int, float, optional
         Version of AEDT to use. The default is ``None``, in which case
         the active version or latest installed version is used.  This
         parameter is ignored when a script is launched within AEDT.
+        Examples of input values are ``232``, ``23.2``,``2023.2``,``"2023.2"``.
     non_graphical : bool, optional
         Whether to launch AEDT in non-graphical mode. The default
         is ``False``, in which case AEDT is launched in graphical mode.
@@ -1099,10 +2114,12 @@ class Q2d(QExtractor, object):
         )
         self.MATRIXOPERATIONS = MATRIXOPERATIONSQ2D()
 
+    def _init_from_design(self, *args, **kwargs):
+        self.__init__(*args, **kwargs)
+
     @pyaedt_function_handler()
     def create_rectangle(self, position, dimension_list, name="", matname=""):
-        """
-        Create a rectangle.
+        """Create a rectangle.
 
         Parameters
         ----------
@@ -1119,7 +2136,7 @@ class Q2d(QExtractor, object):
 
         Returns
         -------
-        :class:`pyaedt.modeler.Object3d.Object3d`
+        :class:`pyaedt.modeler.cad.object3d.Object3d`
             3D object.
 
         References
@@ -1227,7 +2244,7 @@ class Q2d(QExtractor, object):
 
         bound = BoundaryObject(self, name, props, conductor_type)
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
@@ -1270,7 +2287,7 @@ class Q2d(QExtractor, object):
 
         bound = BoundaryObject(self, name, props, "Finite Conductivity")
         if bound.create():
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             return bound
         return False
 
@@ -1293,7 +2310,7 @@ class Q2d(QExtractor, object):
             )
             props = OrderedDict({"Objects": objects})
             bound = BoundaryObject(self, new_nets[i], props, new_nets[i + 1])
-            self.boundaries.append(bound)
+            self._boundaries[bound.name] = bound
             i += 2
         if new_nets:
             self.logger.info("{} Nets have been identified: {}".format(len(new_nets), ", ".join(new_nets)))
@@ -1325,7 +2342,7 @@ class Q2d(QExtractor, object):
         if not os.path.exists(export_folder):
             os.makedirs(export_folder)
         if analyze:
-            self.analyze_all()
+            self.analyze()
         setups = self.oanalysis.GetSetups()
 
         for s in setups:
@@ -1448,3 +2465,59 @@ class Q2d(QExtractor, object):
         except:
             self.logger.error("Error in updating conductor type")
             return False
+
+    @pyaedt_function_handler()
+    def create_setup(self, setupname="MySetupAuto", setuptype=None, **kwargs):
+        """Create an analysis setup for 2D Extractor.
+
+        Optional arguments are passed along with the ``setuptype`` and ``setupname``
+        parameters.  Keyword names correspond to the ``setuptype``
+        corresponding to the native AEDT API.  The list of
+        keywords here is not exhaustive.
+
+
+        Parameters
+        ----------
+        setuptype : int, str, optional
+            Type of the setup. Options are "IcepakSteadyState"
+            and "IcepakTransient". The default is "IcepakSteadyState".
+        setupname : str, optional
+            Name of the setup. The default is "Setup1".
+        **kwargs : dict, optional
+            Available keys depend on the setup chosen.
+            For more information, see :doc:`../SetupTemplatesQ3D`.
+
+
+        Returns
+        -------
+        :class:`pyaedt.modules.SolveSetup.SetupHFSS`
+            Solver Setup object.
+
+        References
+        ----------
+
+        >>> oModule.InsertSetup
+
+        Examples
+        --------
+
+        >>> from pyaedt import Q2d
+        >>> app = Q2d()
+        >>> app.create_setup(setupname="Setup1", RLDataBlock__MinPass=2))
+
+        """
+        if setuptype is None:
+            setuptype = self.design_solutions.default_setup
+        elif setuptype in SetupKeys.SetupNames:
+            setuptype = SetupKeys.SetupNames.index(setuptype)
+        if "props" in kwargs:
+            return self._create_setup(setupname=setupname, setuptype=setuptype, props=kwargs["props"])
+        else:
+            setup = self._create_setup(setupname=setupname, setuptype=setuptype)
+        setup.auto_update = False
+        for arg_name, arg_value in kwargs.items():
+            if setup[arg_name] is not None:
+                setup[arg_name] = arg_value
+        setup.auto_update = True
+        setup.update()
+        return setup

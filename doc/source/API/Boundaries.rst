@@ -13,8 +13,12 @@ app methods and can be used to edit or delete a boundary condition.
 
    NativeComponentObject
    BoundaryObject
+   BoundaryObject3dLayout
    FarFieldSetup
    Matrix
+   BoundaryObject3dLayout
+   Sources
+   Excitations
 
 Example without ``Native Component Object``:
 

@@ -18,27 +18,23 @@ jobs:
   # This workflow contains a single job called "build"
   build:
     # The type of runner that the job will run on
-    runs-on: [Windows, pyaedt]
+    runs-on: [windows-latest, pyaedt]
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: 'Run Unit Tests in Ironpython'
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: |
-          $process = start-process 'cmd' -ArgumentList '/c .\_unittest_ironpython\run_unittests_batchmode.cmd' -PassThru
-
-          $process.WaitForExit()
-
-          get-content .\_unittest_ironpython\runner_unittest.log
-
-          $test_errors_failures = Select-String -Path .\_unittest_ironpython\runner_unittest.log -Pattern "errors=0 failures=0"
-
+          $processA = start-process 'cmd' -ArgumentList '/c .\_unittest_ironpython\run_unittests_batchmode.cmd' -PassThru
+          $processA.WaitForExit()
+          get-content .\_unittest_ironpython\pyaedt_unit_test_ironpython.log
+          $test_errors_failures = Select-String -Path .\_unittest_ironpython\pyaedt_unit_test_ironpython.log -Pattern "TextTestResult errors="
           if ($test_errors_failures -ne $null)
           {
-          exit 0
+          exit 1
           }
           else
           {
-          exit 1
+          exit 0
           }

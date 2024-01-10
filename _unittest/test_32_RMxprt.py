@@ -1,18 +1,25 @@
 import os
 
-from _unittest.conftest import BasisTest
+import pytest
+
 from pyaedt import Rmxprt
+from pyaedt.generic.general_methods import is_linux
 
 test_project_name = "motor"
 
 
-class TestClass(BasisTest, object):
-    def setup_class(self):
-        BasisTest.my_setup(self)
-        self.aedtapp = BasisTest.add_app(self, application=Rmxprt)
+@pytest.fixture(scope="class")
+def aedtapp(add_app):
+    app = add_app(application=Rmxprt)
+    return app
 
-    def teardown_class(self):
-        BasisTest.my_teardown(self)
+
+@pytest.mark.skipif(is_linux, reason="Emit API fails on linux.")
+class TestClass:
+    @pytest.fixture(autouse=True)
+    def init(self, aedtapp, local_scratch):
+        self.aedtapp = aedtapp
+        self.local_scratch = local_scratch
 
     def test_01_save(self):
         test_project = os.path.join(self.local_scratch.path, test_project_name + ".aedt")
@@ -65,3 +72,9 @@ class TestClass(BasisTest, object):
         assert self.aedtapp.set_material_threshold(str(conductivity), str(permeability))
         assert not self.aedtapp.set_material_threshold("e", str(permeability))
         assert not self.aedtapp.set_material_threshold(conductivity, "p")
+
+    def test_06_set_variable(self):
+        self.aedtapp.variable_manager.set_variable("var_test", expression="123")
+        self.aedtapp["var_test"] = "234"
+        assert "var_test" in self.aedtapp.variable_manager.design_variable_names
+        assert self.aedtapp.variable_manager.design_variables["var_test"].expression == "234"

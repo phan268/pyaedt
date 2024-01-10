@@ -3,45 +3,43 @@ HFSS: dipole antenna
 --------------------
 This example shows how you can use PyAEDT to create a dipole antenna in HFSS and postprocess results.
 """
+
+###############################################################################
 # Perform required imports
 # ~~~~~~~~~~~~~~~~~~~~~~~~
 # Perform required imports.
 
 import os
-import tempfile
-from pyaedt import Hfss
-from pyaedt import Desktop
-from pyaedt import generate_unique_project_name
+import pyaedt
 
-project_name= generate_unique_project_name(project_name="dipole")
+project_name = pyaedt.generate_unique_project_name(project_name="dipole")
 
-
-##########################################################
+###############################################################################
 # Set non-graphical mode
 # ~~~~~~~~~~~~~~~~~~~~~~
-# `"PYAEDT_NON_GRAPHICAL"` is needed to generate Documentation only.
-# User can define `non_graphical` value either to `True` or `False`.
+# Set non-graphical mode. `
+# You can set ``non_graphical`` either to ``True`` or ``False``.
 
-non_graphical = os.getenv("PYAEDT_NON_GRAPHICAL", "False").lower() in ("true", "1", "t")
+non_graphical = False
 
 ###############################################################################
 # Launch AEDT
 # ~~~~~~~~~~~
-# Launch AEDT 2022 R2 in graphical mode.
+# Launch AEDT 2023 R2 in graphical mode.
 
-d = Desktop("2022.2", non_graphical=non_graphical, new_desktop_session=True)
+d = pyaedt.launch_desktop("2023.2", non_graphical=non_graphical, new_desktop_session=True)
 
 ###############################################################################
 # Launch HFSS
 # ~~~~~~~~~~~
-# Launch HFSS 2022 R2 in graphical mode.
+# Launch HFSS 2023 R2 in graphical mode.
 
-hfss = Hfss(projectname=project_name, solution_type="Modal")
+hfss = pyaedt.Hfss(projectname=project_name, solution_type="Modal")
 
 ###############################################################################
-# Define dipole length variable
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Define a dipole length variable.
+# Define variable
+# ~~~~~~~~~~~~~~~
+# Define a variable for the dipole length.
 
 hfss["l_dipole"] = "13.5cm"
 
@@ -106,9 +104,9 @@ hfss.create_linear_count_sweep(
 hfss.analyze_setup("MySetup")
 
 ###############################################################################
-# Generate scattering plot and far fields plot
+# Create scattering plot and far fields report
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Generate a scattering plot and a far fields plot.
+# Create a scattering plot and a far fields report.
 
 hfss.create_scattering("MyScattering")
 variations = hfss.available_variations.nominal_w_values_dict
@@ -125,10 +123,10 @@ hfss.post.create_report(
 )
 
 ###############################################################################
-# Generate plot using report objects
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Generate a plot using the ``report_by_category`` method.
-# This plot creation method gives you more freedom. 
+# Create far fields report using report objects
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Create a far fields report using the ``report_by_category.far field`` method,
+# which gives you more freedom.
 
 new_report = hfss.post.reports_by_category.far_field("db(RealizedGainTotal)", hfss.nominal_adaptive, "3D")
 new_report.variations = variations
@@ -148,8 +146,8 @@ new_report.create("Realized3D")
 ###############################################################################
 # Get solution data
 # ~~~~~~~~~~~~~~~~~
-# Get solution data using the object ``new_report` and postprocess or plot the
-# data outside of AEDT.
+# Get solution data using the object ``new_report``` and postprocess or plot the
+# data outside AEDT.
 
 solution_data = new_report.get_solution_data()
 solution_data.plot()
@@ -163,37 +161,19 @@ solution_data.plot()
 # method with an arbitrary name.
 
 hfss["post_x"] = 2
-hfss.variable_manager.set_variable("y_post", 1, postprocessing=True)
-hfss.modeler.create_coordinate_system(["post_x", "y_post", 0], name="CS_Post")
+hfss.variable_manager.set_variable(variable_name="y_post", expression=1, postprocessing=True)
+hfss.modeler.create_coordinate_system(origin=["post_x", "y_post", 0], name="CS_Post")
 hfss.insert_infinite_sphere(custom_coordinate_system="CS_Post", name="Sphere_Custom")
 
 ###############################################################################
 # Get solution data
 # ~~~~~~~~~~~~~~~~~
-# Get solution data. You can use this code to generate the same plot outside
-# of AEDT.
+# Get solution data. You can use this code to generate the same plot outside AEDT.
 
 new_report = hfss.post.reports_by_category.far_field("GainTotal", hfss.nominal_adaptive, "3D")
 new_report.primary_sweep = "Theta"
 new_report.far_field_sphere = "3D"
 solutions = new_report.get_solution_data()
-# solutions = hfss.post.get_solution_data(
-#     "GainTotal",
-#     hfss.nominal_adaptive,
-#     variations,
-#     primary_sweep_variable="Theta",
-#     context="3D",
-#     report_category="Far Fields",
-# )
-#
-# solutions_custom = hfss.post.get_solution_data(
-#     "GainTotal",
-#     hfss.nominal_adaptive,
-#     variations,
-#     primary_sweep_variable="Theta",
-#     context="Sphere_Custom",
-#     report_category="Far Fields",
-# )
 
 ###############################################################################
 # Generate 3D plot using Matplotlib
@@ -205,7 +185,7 @@ solutions.plot_3d()
 ###############################################################################
 # Generate 3D far fields plot using Matplotlib
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Generate a far field plot using Matplotlib.
+# Generate a far fields plot using Matplotlib.
 
 new_report.far_field_sphere = "Sphere_Custom"
 solutions_custom = new_report.get_solution_data()
@@ -214,17 +194,38 @@ solutions_custom.plot_3d()
 ###############################################################################
 # Generate 2D plot using Matplotlib
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Generate a 2D plot using Matplotlib where you decide whether it is a polar
-# plot or rectangular plot.
+# Generate a 2D plot using Matplotlib where you specify whether it is a polar
+# plot or a rectangular plot.
 
 solutions.plot(math_formula="db20", is_polar=True)
+
+##########################################################
+# Get far field data
+# ~~~~~~~~~~~~~~~~~~
+# Get far field data. After the simulation completes, the far
+# field data is generated port by port and stored in a data class, , user can use this data
+# once AEDT is released.
+
+ffdata = hfss.get_antenna_ffd_solution_data(sphere_name="Sphere_Custom", setup_name=hfss.nominal_adaptive,
+                                            frequencies=["1000MHz"])
+
+##########################################################
+# Generate 2D cutout plot
+# ~~~~~~~~~~~~~~~~~~~~~~~
+# Generate 2D cutout plot. You can define the Theta scan
+# and Phi scan.
+
+ffdata.plot_2d_cut(primary_sweep="theta", secondary_sweep_value=0,
+                   farfield_quantity='RealizedGain',
+                   title='FarField',
+                   quantity_format="dB20",
+                   is_polar=True)
 
 ###############################################################################
 # Close AEDT
 # ~~~~~~~~~~
-# After the simulaton completes, you can close AEDT or release it using the
+# After the simulation completes, you can close AEDT or release it using the
 # :func:`pyaedt.Desktop.release_desktop` method.
 # All methods provide for saving the project before closing.
 
-if os.name != "posix":
-    d.release_desktop()
+d.release_desktop()

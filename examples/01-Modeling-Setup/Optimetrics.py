@@ -4,25 +4,30 @@ General: optimetrics setup
 This example shows how you can use PyAEDT to create a project in HFSS and create all optimetrics setups.
 """
 
-from pyaedt import Hfss
+###############################################################################
+# Perform required imports
+# ~~~~~~~~~~~~~~~~~~~~~~~~
+# Perform required imports.
+
+import pyaedt
+
 import os
 
-
-##########################################################
+###############################################################################
 # Set non-graphical mode
 # ~~~~~~~~~~~~~~~~~~~~~~
-# `"PYAEDT_NON_GRAPHICAL"` is needed to generate Documentation only.
-# User can define `non_graphical` value either to `True` or `False`.
+# Set non-graphical mode. 
+# You can set ``non_graphical`` either to ``True`` or ``False``.
 
-non_graphical = os.getenv("PYAEDT_NON_GRAPHICAL", "False").lower() in ("true", "1", "t")
+non_graphical = False
 
 ###############################################################################
-# Initialize object and create design variables
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Initialize object and create variables
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Initialize the ``Hfss`` object and create two needed design variables,
 # ``w1`` and ``w2``.
 
-hfss = Hfss(specified_version="2022.2", new_desktop_session=True, non_graphical=non_graphical)
+hfss = pyaedt.Hfss(specified_version="2023.2", new_desktop_session=True, non_graphical=non_graphical)
 hfss["w1"] = "1mm"
 hfss["w2"] = "100mm"
 
@@ -51,8 +56,8 @@ model.plot(os.path.join(hfss.working_directory, "Image.jpg"))
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Create two wave ports on the sheets.
 
-hfss.create_wave_port_from_sheet(p1, axisdir=hfss.AxisDir.ZPos, portname="1")
-hfss.create_wave_port_from_sheet(p2, axisdir=hfss.AxisDir.ZPos, portname="2")
+hfss.wave_port(p1, integration_line=hfss.AxisDir.ZPos, name="1")
+hfss.wave_port(p2, integration_line=hfss.AxisDir.ZPos, name="2")
 
 ###############################################################################
 # Create setup and frequency sweep
@@ -92,7 +97,7 @@ sweep2.add_calculation(calculation="dB(S(1,1))", ranges={"Freq": "2.6GHz"})
 # Create an optimization analysis based on goals and calculations.
 
 sweep3 = hfss.optimizations.add(calculation="dB(S(1,1))", ranges={"Freq": "2.5GHz"})
-
+sweep3.add_variation("w1", 0.1, 3, 0.5)
 sweep3.add_goal(calculation="dB(S(1,1))", ranges={"Freq": "2.6GHz"})
 sweep3.add_goal(calculation="dB(S(1,1))", ranges={"Freq": ("2.6GHz", "5GHz")})
 sweep3.add_goal(
@@ -104,7 +109,7 @@ sweep3.add_goal(
 ###############################################################################
 # Create DX optimization based on a goal and calculation
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Create a DX (DesignXplorer optimization based on a goal and a calculation.
+# Create a DX (DesignXplorer) optimization based on a goal and a calculation.
 
 sweep4 = hfss.optimizations.add(calculation="dB(S(1,1))", ranges={"Freq": "2.5GHz"}, optim_type="DesignExplorer")
 sweep4.add_goal(calculation="dB(S(1,1))", ranges={"Freq": "2.6GHz"})
@@ -115,8 +120,6 @@ sweep4.add_goal(calculation="dB(S(1,1))", ranges={"Freq": "2.6GHz"})
 # Create a DOE (Design of Experiments) based on a goal and a calculation.
 
 sweep5 = hfss.optimizations.add(calculation="dB(S(1,1))", ranges={"Freq": "2.5GHz"}, optim_type="DXDOE")
-sweep5.add_goal(calculation="dB(S(1,1))", ranges={"Freq": "2.6GHz"})
-sweep5.add_calculation(calculation="dB(S(1,1))", ranges={"Freq": "2.6GHz"})
 
 ###############################################################################
 # Create DOE based on a goal and calculation
@@ -140,5 +143,4 @@ sweep6 = hfss.optimizations.add(
 # :func:`pyaedt.Desktop.release_desktop` method.
 # All methods provide for saving the project before closing.
 
-if os.name != "posix":
-    hfss.release_desktop()
+hfss.release_desktop()

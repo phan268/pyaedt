@@ -1,88 +1,143 @@
-import argparse
-import os
-import sys
 import unittest
-import tempfile
 from datetime import datetime
-from pyaedt import settings
+import os
 
-log_path = os.path.join(tempfile.gettempdir(), "test.log")
-if os.path.exists(os.path.join(tempfile.gettempdir(), "test.log")):
-    try:
-        os.remove(log_path)
-    except:
-        pass
-settings.logger_file_path = log_path
 
-from pyaedt.generic.general_methods import is_ironpython
+from pyaedt import Circuit
+from pyaedt import Hfss
+from pyaedt import Hfss3dLayout
+from pyaedt import Icepak
+from pyaedt import Maxwell2d
+from pyaedt import Maxwell3d
+from pyaedt import Mechanical
+from pyaedt import Q2d
+from pyaedt import Q3d
+from pyaedt import TwinBuilder
 
-if os.name != "posix":
-    ansysem_install_dir = os.environ.get("ANSYSEM_INSTALL_DIR", "")
-    if not ansysem_install_dir:
-        ansysem_install_dir = os.environ["ANSYSEM_ROOT222"]
-    sys.path.append(os.path.join(ansysem_install_dir, "PythonFiles", "DesktopPlugin"))
-path_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..")
-sys.path.append(path_dir)
 
-os.environ["UNITTEST_CURRENT_TEST"] = "1"
 run_dir = os.path.abspath(os.path.dirname(__file__))
-
-args_env = os.environ.get("RUN_UNITTESTS_ARGS", "")
-parser = argparse.ArgumentParser()
-parser.add_argument("--test-filter", "-t", default="test_*.py", help="test filter")
-args = parser.parse_args(args_env.split())
-test_filter = args.test_filter
-
-max_attempts = 2
+log_filename = os.path.join(run_dir, "pyaedt_unit_test_ironpython.log")
 
 
-def discover_and_run(start_dir, pattern=None):
-    """Discover and run tests cases. Return the tests result."""
-    # use the default shared TestLoader instance
-    test_loader = unittest.defaultTestLoader
+def run_tests(filename):
+    suite = unittest.makeSuite(TestIronPython)
 
-    # automatically discover all tests
-    test_suite = test_loader.discover(start_dir, pattern=pattern)
+    with open(filename, "w") as f:
+        f.write("Ironpython Unit Tests Started\n\n")
+        f.write("Start time: {}\n\n".format(datetime.now()))
 
-    # run the test suite
-    log_file = os.path.join(start_dir, "runner_unittest.log")
-    with open(log_file, "w+") as f:
-        f.write("Test filter: {}\n".format(test_filter))
-        f.write("Test started {}\n\n".format(datetime.now()))
-        runner = unittest.TextTestRunner(f, verbosity=2)
-        total_runs = 0
-        total_errors = 0
-        total_failures = 0
-        for sub_suite in test_suite:
-            attempts = 0
-            while True:
-                attempts += 1
-                f.write("\n")
-                result = runner.run(sub_suite)
-                if attempts == max_attempts:
-                    total_runs += result.testsRun
-                    total_errors += len(result.errors)
-                    total_failures += len(result.failures)
-                    break
-                if result.wasSuccessful():
-                    total_runs += result.testsRun
-                    break
-                # try again
-                f.write("\nAttempt n.{} FAILED. Re-running test suite.\n".format(attempts))
-        f.write(
-            "\n<unittest.runner.TextTestResult run={} errors={} failures={}>\n".format(
-                total_runs, total_errors, total_failures
-            )
-        )
-    return result
+        runner = unittest.TextTestRunner(stream=f, verbosity=2)
+        result = runner.run(suite)
+
+        num_runs = result.testsRun
+        num_errors = len(result.errors)
+        num_failures = len(result.failures)
+
+        f.write("\n<unittest.runner.TextTestResult Total Test run={}>\n".format(num_runs))
+        if not result.wasSuccessful():
+            f.write("\n<unittest.runner.TextTestResult errors={}>\n".format(num_errors+num_failures))
 
 
-tests_result = discover_and_run(run_dir, pattern=test_filter)
+class TestIronPython(unittest.TestCase):
 
-if is_ironpython and "oDesktop" in dir(sys.modules["__main__"]):
-    pid = sys.modules["__main__"].oDesktop.GetProcessID()
-    if pid > 0:
-        try:
-            os.kill(pid, 9)
-        except:
-            successfully_closed = False
+    def test_run_desktop_mechanical(self):
+        aedtapp = Mechanical()
+        self.assertTrue(aedtapp.design_type == "Mechanical")
+        self.assertTrue(aedtapp.solution_type == "Steady-State Thermal")
+        aedtapp.solution_type = "Modal"
+        self.assertTrue(aedtapp.solution_type == "Modal")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_circuit(self):
+        aedtapp = Circuit()
+        self.assertTrue(aedtapp.design_type == "Circuit Design")
+        self.assertTrue(aedtapp.solution_type == "NexximLNA")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_icepak(self):
+        aedtapp = Icepak()
+        self.assertTrue(aedtapp.design_type == "Icepak")
+        self.assertTrue(aedtapp.solution_type == "SteadyState")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_hfss3dlayout(self):
+        aedtapp = Hfss3dLayout()
+        self.assertTrue(aedtapp.design_type == "HFSS 3D Layout Design")
+        self.assertTrue(aedtapp.solution_type == "HFSS3DLayout")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_twinbuilder(self):
+        aedtapp = TwinBuilder()
+        self.assertTrue(aedtapp.design_type == "Twin Builder")
+        self.assertTrue(aedtapp.solution_type == "TR")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_q2d(self):
+        aedtapp = Q2d()
+        self.assertTrue(aedtapp.design_type == "2D Extractor")
+        self.assertTrue(aedtapp.solution_type == "Open")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_q3d(self):
+        aedtapp = Q3d()
+        self.assertTrue(aedtapp.design_type == "Q3D Extractor")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_maxwell2d(self):
+        aedtapp = Maxwell2d()
+        self.assertTrue(aedtapp.design_type == "Maxwell 2D")
+        self.assertTrue(aedtapp.solution_type == "Magnetostatic")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_hfss(self):
+        aedtapp = Hfss()
+        self.assertTrue(aedtapp.design_type == "HFSS")
+        self.assertTrue("Modal" in aedtapp.solution_type)
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+    def test_run_desktop_maxwell3d(self):
+        aedtapp = Maxwell3d()
+        self.assertTrue(aedtapp.design_type == "Maxwell 3D")
+        self.assertTrue(aedtapp.solution_type == "Magnetostatic")
+        self.assertTrue(aedtapp.modeler)
+        self.assertTrue(aedtapp.post)
+        self.assertTrue(aedtapp.materials)
+        self.assertTrue(aedtapp.mesh)
+        self.assertTrue(aedtapp.variable_manager)
+
+
+if __name__ == '__main__':
+    run_tests(log_filename)

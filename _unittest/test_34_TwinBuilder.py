@@ -1,35 +1,62 @@
-# Setup paths for module imports
 import os
 
-from _unittest.conftest import BasisTest
+from _unittest.conftest import NONGRAPHICAL
+from _unittest.conftest import desktop_version
 from _unittest.conftest import local_path
+from _unittest.conftest import new_thread
+import pytest
+
+from pyaedt import Desktop
 from pyaedt import TwinBuilder
+from pyaedt.generic.general_methods import is_linux
+
+test_subfolder = "T34"
 
 
-class TestClass(BasisTest, object):
-    def setup_class(self):
-        project_name = "TwinBuilderProject"
-        design_name = "TwinBuilderDesign1"
-        BasisTest.my_setup(self)
-        self.aedtapp = BasisTest.add_app(
-            self, project_name=project_name, design_name=design_name, application=TwinBuilder
-        )
-        netlist1 = os.path.join(local_path, "example_models", "netlist_small.cir")
-        self.netlist_file1 = self.local_scratch.copyfile(netlist1)
+@pytest.fixture(scope="class")
+def aedtapp(add_app):
+    app = add_app(project_name="TwinBuilderProject", design_name="TwinBuilderDesign1", application=TwinBuilder)
+    app.modeler.schematic_units = "mil"
+    return app
 
-    def teardown_class(self):
-        BasisTest.my_teardown(self)
+
+@pytest.fixture(scope="class", autouse=True)
+def examples(local_scratch):
+    netlist1 = os.path.join(local_path, "../_unittest/example_models", test_subfolder, "netlist_small.cir")
+    netlist_file1 = local_scratch.copyfile(netlist1)
+    return netlist_file1, None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def desktop():
+    d = Desktop(desktop_version, NONGRAPHICAL, new_thread)
+    d.disable_autosave()
+    d.odesktop.SetDesktopConfiguration("Twin Builder")
+    d.odesktop.SetSchematicEnvironment(1)
+    yield d
+    d.odesktop.SetDesktopConfiguration("All")
+    d.odesktop.SetSchematicEnvironment(0)
+    d.release_desktop(True, True)
+
+
+@pytest.mark.skipif(is_linux, reason="Emit API fails on linux.")
+class TestClass:
+    @pytest.fixture(autouse=True)
+    def init(self, aedtapp, local_scratch, examples):
+        self.aedtapp = aedtapp
+        self.local_scratch = local_scratch
+        self.netlist_file1 = examples[0]
 
     def test_01_create_resistor(self):
         id = self.aedtapp.modeler.schematic.create_resistor("Resistor1", 10, [0, 0])
         assert id.parameters["R"] == "10"
 
     def test_02_create_inductor(self):
-        id = self.aedtapp.modeler.schematic.create_inductor("Inductor1", 1.5, [0.25, 0])
+        id = self.aedtapp.modeler.schematic.create_inductor("Inductor1", 1.5, [1000, 0])
         assert id.parameters["L"] == "1.5"
 
     def test_03_create_capacitor(self):
-        id = self.aedtapp.modeler.schematic.create_capacitor("Capacitor1", 7.5, [0.5, 0])
+        id = self.aedtapp.modeler.schematic.create_capacitor("Capacitor1", 7.5, [2000, 0])
         assert id.parameters["C"] == "7.5"
 
     def test_04_create_diode(self):
@@ -68,6 +95,12 @@ class TestClass(BasisTest, object):
         assert comp_catalog["Aircraft Electrical VHDLAMS\\Basic:lowpass_filter"].place("LP1")
 
     def test_13_create_periodic_pulse_wave(self):
-        id = self.aedtapp.modeler.schematic.create_periodic_waveform_source("P1", "PULSE", 200, 20, 0, 0, [0.75, 0])
+        id = self.aedtapp.modeler.schematic.create_periodic_waveform_source("P1", "PULSE", 200, 20, 0, 0, [3000, 0])
         assert id.parameters["AMPL"] == "200"
         assert id.parameters["FREQ"] == "20"
+
+    def test_14_set_variable(self):
+        self.aedtapp.variable_manager.set_variable("var_test", expression="123")
+        self.aedtapp["var_test"] = "234"
+        assert "var_test" in self.aedtapp.variable_manager.design_variable_names
+        assert self.aedtapp.variable_manager.design_variables["var_test"].expression == "234"

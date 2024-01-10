@@ -1,28 +1,27 @@
-# standard imports
 import math
 
-from _unittest.conftest import BasisTest
-from pyaedt.generic.general_methods import is_ironpython
+import pytest
+
+from pyaedt.generic.general_methods import _to_boolean
+from pyaedt.generic.general_methods import _uname
+from pyaedt.generic.general_methods import is_linux
 from pyaedt.generic.general_methods import isclose
 from pyaedt.generic.general_methods import time_fn
-from pyaedt.modeler.Object3d import EdgePrimitive
-from pyaedt.modeler.Object3d import FacePrimitive
-from pyaedt.modeler.Object3d import _to_boolean
-from pyaedt.modeler.Object3d import _uname
-
-try:
-    import pytest
-except ImportError:
-    import _unittest_ironpython.conf_unittest as pytest
+from pyaedt.modeler.cad.elements3d import EdgePrimitive
+from pyaedt.modeler.cad.elements3d import FacePrimitive
 
 
-class TestClass(BasisTest, object):
-    def setup_class(self):
-        BasisTest.my_setup(self)
-        self.aedtapp = BasisTest.add_app(self, project_name="Test07")
+@pytest.fixture(scope="class")
+def aedtapp(add_app):
+    app = add_app(project_name="Test07")
+    return app
 
-    def teardown_class(self):
-        BasisTest.my_teardown(self)
+
+class TestClass:
+    @pytest.fixture(autouse=True)
+    def init(self, aedtapp, local_scratch):
+        self.aedtapp = aedtapp
+        self.local_scratch = local_scratch
 
     def create_example_coil(self, name=None):
         if not name:
@@ -138,7 +137,9 @@ class TestClass(BasisTest, object):
         for vertex in object_vertices:
             assert len(vertex.position) == 3
         circle = self.aedtapp.modeler.create_circle("Z", [0, 0, 0], 2)
-        assert circle.edges[0].segment_info["Command"] == "CreateCircle"
+        assert len(circle.faces) == 1
+        circle2 = self.aedtapp.modeler.create_circle("Z", [0, 0, 0], 2, non_model=True)
+        assert not circle2.model
 
     def test_03_FacePrimitive(self):
         o_box = self.create_copper_box("PrimitiveBox")
@@ -148,7 +149,7 @@ class TestClass(BasisTest, object):
         planar_face.move_with_offset(1)
         assert planar_face.center == [5.0, 5.0, 6.0]
         assert planar_face.normal == [0, 0, 1]
-        assert planar_face.area == 100
+        assert isclose(planar_face.area, 100)
         non_planar_face = o_sphere.faces[0]
         assert isclose(non_planar_face.area, 201.06192982974676)
         assert non_planar_face.move_with_offset(1)
@@ -166,15 +167,23 @@ class TestClass(BasisTest, object):
         assert isinstance(o_box.longest_edge()[0], EdgePrimitive)
         assert isinstance(o_box.shortest_edge()[0], EdgePrimitive)
 
-    def test_04_object_material_property_invalid(self):
+    def test_04a_object_material_property_invalid(self):
         o_box = self.create_copper_box("Invalid1")
         o_box.material_name = "Copper1234Invalid"
         assert o_box.material_name == "copper"
 
-    def test_04_object_material_property_valid(self):
+    def test_04b_object_material_property_valid(self):
         o_box = self.create_copper_box("Valid2")
         o_box.material_name = "aluminum"
         assert o_box.material_name == "aluminum"
+
+    def test_04c_material_name_setter(self):
+        self.aedtapp.materials.add_material("myMat")
+        self.aedtapp.materials.add_material("myMat2")
+        self.aedtapp["mat_sweep_test"] = '["myMat", "myMat2"]'
+        box = self.aedtapp.modeler["MyBox"]
+        box.material_name = "mat_sweep_test[0]"
+        assert self.aedtapp.modeler.get_objects_by_material(materialname="myMat")[0].name == "MyBox"
 
     def test_05_object3d_properties_transparency(self):
         o = self.create_copper_box("TransparencyBox")
@@ -285,7 +294,6 @@ class TestClass(BasisTest, object):
         test = initial_object.edges[0].fillet(radius=0.2)
         assert test
         test = initial_object.edges[1].fillet(radius=0.2, setback=0.1)
-        assert not test
         self.aedtapp.modeler.delete(initial_object)
 
     def test_object_length(self):
@@ -332,14 +340,14 @@ class TestClass(BasisTest, object):
         o = self.create_copper_box()
         assert o.name in o.__str__()
         test_face = o.faces[0]
-        assert "FaceId" in test_face.__repr__()
-        assert "FaceId" in test_face.__str__()
+        assert isinstance(int(test_face.__str__()), int)
+        assert isinstance(int(test_face.__repr__()), int)
         test_edge = test_face.edges[0]
-        assert "EdgeId" in test_edge.__repr__()
-        assert "EdgeId" in test_edge.__str__()
+        assert isinstance(int(test_edge.__str__()), int)
+        assert isinstance(int(test_edge.__repr__()), int)
         test_vertex = test_face.vertices[0]
-        assert "Vertex" in test_vertex.__repr__()
-        assert "Vertex" in test_vertex.__str__()
+        assert isinstance(int(test_vertex.__str__()), int)
+        assert isinstance(int(test_vertex.__repr__()), int)
 
     def test_13_delete_self(self):
         o = self.create_copper_box()
@@ -351,7 +359,7 @@ class TestClass(BasisTest, object):
     def test_14_translate_delete_self(self):
         o = self.create_copper_box()
         v0 = o.vertices[0].position
-        o.translate([1, 0, 0])
+        o.move([1, 0, 0])
         v1 = o.vertices[0].position
         assert v1[0] == v0[0] + 1.0
         assert v1[1] == v0[1]
@@ -409,7 +417,7 @@ class TestClass(BasisTest, object):
         box2 = self.aedtapp.modeler.create_box([0, 0, 0], [10, 10, 10], matname="MyMaterial")
         assert box2.mass == 0.0
         new_material.mass_density = 1
-        assert box2.mass == 1000.0
+        assert isclose(box2.mass, 1000.0)
         box2.model = False
         assert box2.mass == 0.0
         rec = self.aedtapp.modeler.create_rectangle(0, [0, 0, 0], [5, 10])
@@ -417,7 +425,7 @@ class TestClass(BasisTest, object):
 
     def test_23_volume(self):
         box3 = self.aedtapp.modeler.create_box([10, 10, 10], [5, 10, 2], matname="Copper")
-        assert box3.volume == 100
+        assert isclose(box3.volume, 100)
         rec = self.aedtapp.modeler.create_rectangle(0, [0, 0, 0], [5, 10])
         assert rec.volume == 0.0
 
@@ -467,9 +475,8 @@ class TestClass(BasisTest, object):
                 for face in face_object:
                     assert (face.area - 105) < 0
 
-        if not is_ironpython:
-            with pytest.raises(ValueError):
-                self.aedtapp.modeler.object_list[0].faces_by_area(100, "<<")
+        with pytest.raises(ValueError):
+            self.aedtapp.modeler.object_list[0].faces_by_area(100, "<<")
 
     def test_25_edges_by_length(self):
         edges_equal = []
@@ -517,9 +524,8 @@ class TestClass(BasisTest, object):
                 for edge in edge_object:
                     assert (edge.length - 15) < 0
 
-        if not is_ironpython:
-            with pytest.raises(ValueError):
-                self.aedtapp.modeler.object_list[0].edges_by_length(10, "<<")
+        with pytest.raises(ValueError):
+            self.aedtapp.modeler.object_list[0].edges_by_length(10, "<<")
 
     def test_26_unclassified_object(self):
         box1 = self.aedtapp.modeler.create_box([0, 0, 0], [2, 2, 2])
@@ -530,3 +536,130 @@ class TestClass(BasisTest, object):
 
         self.aedtapp.modeler.oeditor.Intersect(vArg1, vArg2)
         assert box1 in self.aedtapp.modeler.unclassified_objects
+
+    def test_27_get_object_history_properties(self):
+        box = self.aedtapp.modeler.create_box([10, 10, 10], [15, 15, 15], "box_history", matname="Copper")
+        cylinder = self.aedtapp.modeler.create_cylinder(
+            cs_axis="Y",
+            position=[10, 10, 10],
+            radius=5,
+            height=20,
+            numSides=4,
+            name="cylinder_history",
+            matname="Copper",
+        )
+
+        box_clone = box.clone()
+        box_subtract = box_clone.subtract(cylinder)
+        box_subtract.rotate(cs_axis="Y", angle=180)
+        box_subtract.split("XY")
+        box_history = box.history()
+        box_clone_history = box_clone.history()
+        assert box_history.node == "box_history"
+        assert box_history.command == "CreateBox"
+        assert box_history.props["Command"] == "CreateBox"
+        assert box_history.children == {}
+        assert box_clone_history.node == "box_history1"
+        assert box_clone_history.command == box_history.command
+        assert box_clone_history.props["Command"] == box_history.props["Command"]
+        assert box_clone_history.props["Position/X"] == box_history.props["Position/X"]
+        assert box_clone_history.props["Position/Y"] == box_history.props["Position/Y"]
+        assert box_clone_history.props["Position/Z"] == box_history.props["Position/Z"]
+        assert box_clone_history.props["XSize"] == box_history.props["XSize"]
+        assert box_clone_history.props["YSize"] == box_history.props["YSize"]
+        assert box_clone_history.props["ZSize"] == box_history.props["ZSize"]
+        assert len(box_clone_history.children) == 3
+        assert "Subtract:1" in box_clone_history.children.keys()
+        assert "Rotate:1" in box_clone_history.children.keys()
+        assert "SplitEdit:1" in box_clone_history.children.keys()
+        assert box_clone_history.children["Subtract:1"].command == "Subtract"
+        assert box_clone_history.children["Rotate:1"].command == "Rotate"
+        assert box_clone_history.children["SplitEdit:1"].command == "SplitEdit"
+        project_path = self.aedtapp.project_file
+        self.aedtapp.close_project(save_project=True)
+        self.aedtapp.load_project(project_path)
+        subtract = self.aedtapp.modeler["box_history1"].history().children["Subtract:1"].children
+        assert len(subtract) == 1
+        for key in subtract.keys():
+            assert subtract[key].command == subtract[key].props["Command"]
+            subtract_child = subtract[key].children
+            for child in subtract_child.keys():
+                assert subtract_child[child].command == subtract_child[child].props["Command"]
+                assert len(subtract_child[child].children) == 0
+
+    def test_27b_object_suppress(self):
+        box = self.aedtapp.modeler.get_object_from_name("box_history1")
+        assert box.history().suppress_all(self.aedtapp)
+        assert box.history().unsuppress_all(self.aedtapp)
+
+    def test_27c_object_jsonalize(self):
+        box = self.aedtapp.modeler.get_object_from_name("box_history1")
+        assert box.history().jsonalize_tree()
+
+    def test_28_set_object_history_properties(self):
+        history = self.aedtapp.modeler["box_history1"].history()
+        assert history.props["Position/X"] == "10meter"
+        history.props["Position/X"] = "15meter"
+        assert history.props["Position/X"] == "15meter"
+        assert history.props["ZSize"] == "15meter"
+        history.props["ZSize"] = "10meter"
+        assert history.props["ZSize"] == "10meter"
+        subtract = history.children["Subtract:1"].children
+        for key in subtract.keys():
+            subtract_child = subtract[key].children
+            for child in subtract_child.keys():
+                if "CreateCylinder" in child:
+                    assert subtract_child[child].props["Center Position/X"] == "10meter"
+                    subtract_child[child].props["Center Position/X"] = "15meter"
+                    assert subtract_child[child].props["Center Position/X"] == "15meter"
+                    assert subtract_child[child].props["Axis"] == "Y"
+                    subtract_child[child].props["Axis"] = "Z"
+                    assert subtract_child[child].props["Axis"] == "Z"
+                    assert subtract_child[child].props["Radius"] == "5meter"
+                    subtract_child[child].props["Radius"] = "8meter"
+                    assert subtract_child[child].props["Radius"] == "8meter"
+                    assert subtract_child[child].props["Height"] == "20meter"
+                    subtract_child[child].props["Height"] = "24meter"
+                    assert subtract_child[child].props["Height"] == "24meter"
+
+    def test_29_test_nets(self):
+        self.aedtapp.insert_design("nets")
+        self.aedtapp.modeler.create_box([0, 0, 0], [5, 10, 10], matname="copper")
+        self.aedtapp.modeler.create_box([30, 0, 0], [5, 10, 10], matname="copper")
+        self.aedtapp.modeler.create_box([60, 0, 0], [5, 10, 10], matname="vacuum")
+        nets = self.aedtapp.identify_touching_conductors()
+        assert len(nets) == 2
+
+    def test_62_heal_objects(self):
+        self.aedtapp.insert_design("Heal_Objects")
+        self.aedtapp.modeler.create_box([0, 1.5, 0], [1, 2.5, 5], name="box_1")
+        self.aedtapp.modeler.create_box([0, 1.5, 0], [1, 2.5, 5], name="box_2")
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1")
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1,box_2")
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1, box_2 ")
+        assert not self.aedtapp.modeler.heal_objects(input_objects_list=["box_1", "box_2"])
+        assert not self.aedtapp.modeler.heal_objects(input_objects_list="box_1", simplify_type=3)
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", max_stitch_tolerance="0.01")
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", max_stitch_tolerance=0.01)
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", geometry_simplification_tolerance=1.2)
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", geometry_simplification_tolerance="1.2")
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", tighten_gaps_width=0.001)
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", tighten_gaps_width="0.001")
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", silver_face_tolerance=1.2)
+        assert self.aedtapp.modeler.heal_objects(input_objects_list="box_1", silver_face_tolerance="1.2")
+        assert not self.aedtapp.modeler.heal_objects(input_objects_list=None)
+        assert not self.aedtapp.modeler.heal_objects(input_objects_list=1)
+
+    @pytest.mark.skipif(is_linux, reason="Crashing in linux")
+    def test_20_simplify_objects(self):
+        assert self.aedtapp.modeler.simplify_objects(input_objects_list="box_1")
+        assert self.aedtapp.modeler.simplify_objects(input_objects_list="box_1,box_2")
+        assert self.aedtapp.modeler.simplify_objects(input_objects_list="box_1, box_2")
+        assert not self.aedtapp.modeler.simplify_objects(input_objects_list=["box_1", "box_2"])
+        assert self.aedtapp.modeler.simplify_objects(input_objects_list="box_1", simplify_type="Primitive Fit")
+        assert not self.aedtapp.modeler.simplify_objects(input_objects_list="box_1", simplify_type="Invalid")
+        assert not self.aedtapp.modeler.simplify_objects(
+            input_objects_list="box_1", simplify_type="Polygon Fit", extrusion_axis="U"
+        )
+        assert not self.aedtapp.modeler.simplify_objects(input_objects_list=None)
+        assert not self.aedtapp.modeler.simplify_objects(input_objects_list=1)

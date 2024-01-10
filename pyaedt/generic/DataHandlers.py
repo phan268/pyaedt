@@ -1,31 +1,17 @@
 # -*- coding: utf-8 -*-
+from collections import OrderedDict
+from decimal import Decimal
 import json
 import math
-import os
 import random
 import re
 import string
-import warnings
-from collections import OrderedDict
-from decimal import Decimal
 
 from pyaedt.generic.general_methods import pyaedt_function_handler
 from pyaedt.generic.general_methods import settings
-from pyaedt.modeler.Object3d import EdgePrimitive
-from pyaedt.modeler.Object3d import FacePrimitive
-from pyaedt.modeler.Object3d import VertexPrimitive
-
-try:
-    import clr
-
-    clr.AddReference("System.Collections")
-    from System.Collections.Generic import List
-
-    clr.AddReference("System")
-    from System import Double
-except ImportError:
-    if os.name != "posix":
-        warnings.warn("PythonNET is needed to run pyaedt")
+from pyaedt.modeler.cad.elements3d import EdgePrimitive
+from pyaedt.modeler.cad.elements3d import FacePrimitive
+from pyaedt.modeler.cad.elements3d import VertexPrimitive
 
 
 @pyaedt_function_handler()
@@ -45,33 +31,44 @@ def _tuple2dict(t, d):
     """
     k = t[0]
     v = t[1]
-    if type(v) is list and len(t) > 2:
+    if isinstance(v, list) and len(t) > 2:
         d[k] = v
-    elif type(v) is list and len(t) == 2 and not v:
+    elif isinstance(v, list) and len(t) == 2 and not v:
         d[k] = None
     elif (
-        type(v) is list and type(v[0]) is tuple and len(t) == 2
+        isinstance(v, list) and isinstance(v[0], tuple) and len(t) == 2
     ):  # len check is to avoid expanding the list with a 3rd element=None
-        d[k] = OrderedDict()
-        for tt in v:
-            _tuple2dict(tt, d[k])
+        if k in d:
+            if not isinstance(d[k], list):
+                d[k] = [d[k]]
+            d1 = OrderedDict()
+            for tt in v:
+                _tuple2dict(tt, d1)
+            d[k].append(d1)
+        else:
+            d[k] = OrderedDict()
+            for tt in v:
+                _tuple2dict(tt, d[k])
     else:
         d[k] = v
 
 
 @pyaedt_function_handler()
 def _dict2arg(d, arg_out):
-    """
+    """Create a valid string of name-value pairs for the native AEDT API.
+
+    Prepend the argument string in `arg_out` using the dictionary ``d``
+    to create a valid input string as an argument for the native AEDT API.
 
     Parameters
     ----------
-    d :
+    d : dict
+        Dictionary to use for prepending to the argument string being built
+        for the native AEDT API.
 
-    arg_out :
-
-
-    Returns
-    -------
+    arg_out : str.
+        String of the name/value pair to be built as an argument
+        for the native AEDT API.
 
     """
     for k, v in d.items():
@@ -179,6 +176,9 @@ def create_list_for_csharp(input_list, return_strings=False):
     -------
 
     """
+    from pyaedt.generic.clr_module import Double
+    from pyaedt.generic.clr_module import List
+
     if return_strings:
         col = List[str]()
     else:
@@ -207,6 +207,8 @@ def create_table_for_csharp(input_list_of_list, return_strings=True):
     -------
 
     """
+    from pyaedt.generic.clr_module import List
+
     new_table = List[List[str]]()
     for col in input_list_of_list:
         newcol = create_list_for_csharp(col, return_strings)
@@ -487,6 +489,39 @@ def to_aedt(code):
     return return_code
 
 
+def str_to_bool(s):
+    """Convert a ``"True"`` or ``"False"`` string to its corresponding Boolean value.
+
+    If the passed arguments are not relevant in the context of conversion, the argument
+    itself is returned. This method can be called using the ``map()`` function to
+    ensure conversion of Boolean strings in a list.
+
+    Parameters
+    ----------
+    s: str
+
+    Returns
+    -------
+    bool or str
+         The method is not case-sensitive.
+         - ``True`` is returned  if the input is ``"true"``, ``"1"``,
+           `"yes"``, or ``"y"``,
+         - ``False`` is returned if the input is ``"false"``, ``"no"``,
+           ``"n``,  or ``"0"``.
+         - Otherwise, the input value is passed through the method unchanged.
+
+    """
+    if type(s) == str:
+        if s.lower() in ["true", "yes", "y", "1"]:
+            return True
+        elif s.lower() in ["false", "no", "n", "0"]:
+            return False
+        else:
+            return s
+    elif type(s) == int:
+        return False if s == 0 else True
+
+
 @pyaedt_function_handler()
 def from_rkm_to_aedt(code):
     """
@@ -525,6 +560,9 @@ unit_val = {
     "nm": 1e-9,
     "um": 1e-6,
     "mm": 1e-3,
+    "in": 0.0254,
+    "inches": 0.0254,
+    "mil": 2.54e-5,
     "cm": 1e-2,
     "dm": 1e-1,
     "meter": 1.0,

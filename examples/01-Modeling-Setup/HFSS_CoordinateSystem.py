@@ -3,44 +3,42 @@ General: coordinate system creation
 -----------------------------------
 This example shows how you can use PyAEDT to create and modify coordinate systems in the modeler.
 """
-# sphinx_gallery_thumbnail_path = 'Resources/coordinate_system.png'
+###############################################################################
+# Perform required imports
+# ~~~~~~~~~~~~~~~~~~~~~~~~
+# Perform required imports
 
 import os
 
-from pyaedt import Hfss
-from pyaedt import Desktop
-from pyaedt import generate_unique_project_name
+import pyaedt
 
-
-
-##########################################################
+###############################################################################
 # Set non-graphical mode
 # ~~~~~~~~~~~~~~~~~~~~~~
-# `"PYAEDT_NON_GRAPHICAL"` is needed to generate Documentation only.
-# User can define `non_graphical` value either to `True` or `False`.
+# Set non-graphical mode. 
+# You can set ``non_graphical`` either to ``True`` or ``False``.
 
-non_graphical = os.getenv("PYAEDT_NON_GRAPHICAL", "False").lower() in ("true", "1", "t")
-
+non_graphical = False
 
 ###############################################################################
 # Launch AEDT in graphical mode
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Launch AEDT 2022 R2 in graphical mode.
+# Launch AEDT 2023 R2 in graphical mode.
 
-d = Desktop("2022.2", non_graphical=non_graphical, new_desktop_session=True)
+d = pyaedt.launch_desktop(specified_version="2023.2", non_graphical=non_graphical, new_desktop_session=True)
 
 ###############################################################################
 # Insert HFSS design
 # ~~~~~~~~~~~~~~~~~~
 # Insert an HFSS design with the default name.
 
-hfss = Hfss(projectname=generate_unique_project_name(folder_name="CoordSysDemo"))
+hfss = pyaedt.Hfss(projectname=pyaedt.generate_unique_project_name(folder_name="CoordSysDemo"))
 
 ###############################################################################
 # Create coordinate system
 # ~~~~~~~~~~~~~~~~~~~~~~~~
-# The coordinate system is centered on the ``Global`` origin and has the axis
-# aligned to the ``Global`` coordinate system. The new coordinate system is
+# The coordinate system is centered on the global origin and has the axis
+# aligned to the global coordinate system. The new coordinate system is
 # saved in the object ``cs1``.
 
 cs1 = hfss.modeler.create_coordinate_system()
@@ -72,7 +70,7 @@ cs1.rename("newCS")
 ###############################################################################
 # Change coordinate system mode
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Use the function ``change_cs_mode`` to change the mode. Options are ``0``
+# Use the ``change_cs_mode`` method to change the mode. Options are ``0``
 # for axis/position, ``1`` for Euler angle ZXZ, and ``2`` for Euler angle ZYZ.
 # Here ``1`` sets Euler angle ZXZ as the mode.
 
@@ -176,7 +174,7 @@ fcs4.props["ZRotationAngle"] = "3deg"
 # Apply offset to X and Y axes of face coordinate system
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Apply an offset to the X axis and Y axis of a face coordinate system.
-# The offset is in respect the face coordinate system itself.
+# The offset is in respect to the face coordinate system itself.
 
 fcs5 = hfss.modeler.create_face_coordinate_system(
     face=face, origin=face, axis_position=face.edges[2], offset=[0.5, 0.3]
@@ -190,7 +188,7 @@ fcs5.props["YOffset"] = "0.1mm"
 # Create coordinate system relative to face coordinate system
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Create a coordinate system relative to a face coordinate system. Coordinate
-# systems and face coordinate systems interact each other.
+# systems and face coordinate systems interact with each other.
 
 face = box.faces[1]
 fcs6 = hfss.modeler.create_face_coordinate_system(face=face, origin=face, axis_position=face.edges[0])
@@ -198,6 +196,47 @@ cs_fcs = hfss.modeler.create_coordinate_system(
     name="CS_FCS", origin=[0, 0, 0], reference_cs=fcs6.name, mode="view", view="iso"
 )
 
+###############################################################################
+# Create object coordinate system
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Create object coordinate system with origin on face
+
+obj_cs = hfss.modeler.create_object_coordinate_system(
+            obj=box, origin=box.faces[0], x_axis=box.edges[0], y_axis=[0, 0, 0], name="box_obj_cs"
+        )
+obj_cs.rename("new_obj_cs")
+
+###############################################################################
+# Create object coordinate system
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Create object coordinate system with origin on edge
+
+obj_cs_1 = hfss.modeler.create_object_coordinate_system(
+            obj=box.name, origin=box.edges[0], x_axis=[1, 0, 0], y_axis=[0, 1, 0], name="obj_cs_1"
+        )
+obj_cs_1.set_as_working_cs()
+
+###############################################################################
+# Create object coordinate system
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Create object coordinate system with origin specified on point
+
+obj_cs_2 = hfss.modeler.create_object_coordinate_system(
+            obj=box.name, origin=[0, 0.8, 0], x_axis=[1, 0, 0], y_axis=[0, 1, 0], name="obj_cs_2"
+        )
+new_obj_cs_2 = hfss.modeler.duplicate_coordinate_system_to_global(obj_cs_2)
+obj_cs_2.delete()
+
+###############################################################################
+# Create object coordinate system
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Create object coordinate system with origin on vertex
+
+obj_cs_3 = hfss.modeler.create_object_coordinate_system(
+            obj=box.name, origin=box.vertices[1], x_axis=box.faces[2], y_axis=box.faces[4], name="obj_cs_3"
+        )
+obj_cs_3.props["MoveToEnd"] = False
+obj_cs_3.update()
 
 ###############################################################################
 # Get all coordinate systems
@@ -236,5 +275,4 @@ print("CS5 :", p2)
 # :func:`pyaedt.Desktop.release_desktop` method.
 # All methods provide for saving the project before closing.
 
-if os.name != "posix":
-    d.release_desktop()
+d.release_desktop()

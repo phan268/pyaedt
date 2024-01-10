@@ -1,7 +1,7 @@
 """
-Icepack: setup from Sherlock inputs
+Icepak: setup from Sherlock inputs
 -----------------------------------
-This example shows how to create an Icepak project starting from Sherlock
+This example shows how you can create an Icepak project from Sherlock
 files (STEP and CSV) and an AEDB board.
 """
 ###############################################################################
@@ -11,27 +11,25 @@ files (STEP and CSV) and an AEDB board.
 
 import time
 import os
-import tempfile
+import pyaedt
 import datetime
 
-from pyaedt import examples, generate_unique_folder_name
-
 # Set paths
-project_folder = generate_unique_folder_name()
-input_dir = examples.download_sherlock()
-
-##########################################################
-# Set non-graphical mode
-# ~~~~~~~~~~~~~~~~~~~~~~
-# `"PYAEDT_NON_GRAPHICAL"` is needed to generate Documentation only.
-# User can define `non_graphical` value either to `True` or `False`.
-
-non_graphical = os.getenv("PYAEDT_NON_GRAPHICAL", "False").lower() in ("true", "1", "t")
+project_folder = pyaedt.generate_unique_folder_name()
+input_dir = pyaedt.downloads.download_sherlock(destination=project_folder)
 
 ###############################################################################
-# Input variables
-# ~~~~~~~~~~~~~~~
-# Input variables. The following code creates all input variables that are needed
+# Set non-graphical mode
+# ~~~~~~~~~~~~~~~~~~~~~~
+# Set non-graphical mode. 
+# You can set ``non_graphical`` value either to ``True`` or ``False``.
+
+non_graphical = False
+
+###############################################################################
+# Define variables
+# ~~~~~~~~~~~~~~~~
+# Define input variables. The following code creates all input variables that are needed
 # to run this example.
 
 material_name = "MaterialExport.csv"
@@ -43,19 +41,11 @@ stackup_thickness = 2.11836
 outline_polygon_name = "poly_14188"
 
 ###############################################################################
-# Import Icepak and AEDT
-# ~~~~~~~~~~~~~~~~~~~~~~
-# Import Icepak and AEDT.
-
-from pyaedt import Icepak
-from pyaedt import Desktop
-
-###############################################################################
 # Launch AEDT
 # ~~~~~~~~~~~
-# Launch AEDT 2022 R2 in graphical mode.
+# Launch AEDT 2023 R2 in graphical mode.
 
-d = Desktop("2022.2", non_graphical=non_graphical, new_desktop_session=True)
+d = pyaedt.launch_desktop(specified_version="2023.2", non_graphical=non_graphical, new_desktop_session=True)
 
 start = time.time()
 material_list = os.path.join(input_dir, material_name)
@@ -69,7 +59,7 @@ project_name = os.path.join(project_folder, component_step[:-3] + "aedt")
 # ~~~~~~~~~~~~~~~~~~~~~
 # Create an Icepak project.
 
-ipk = Icepak(project_name)
+ipk = pyaedt.Icepak(project_name)
 
 ###############################################################################
 # Delete region to speed up import
@@ -86,9 +76,8 @@ component_name = "from_ODB"
 # Import a PCB from an AEDB file.
 
 odb_path = os.path.join(input_dir, aedt_odb_project)
-ipk.create_pcb_from_3dlayout(
-    component_name, odb_path, aedt_odb_design_name, extenttype="Polygon", outlinepolygon=outline_polygon_name
-)
+ipk.create_pcb_from_3dlayout(component_name=component_name, project_name=odb_path, design_name=aedt_odb_design_name,
+                             extenttype="Polygon")
 
 ###############################################################################
 # Create offset coordinate system
@@ -96,7 +85,7 @@ ipk.create_pcb_from_3dlayout(
 # Create an offset coordinate system to match ODB++ with the
 # Sherlock STEP file.
 
-ipk.modeler.create_coordinate_system([0, 0, stackup_thickness / 2], mode="view", view="XY")
+ipk.modeler.create_coordinate_system(origin=[0, 0, stackup_thickness / 2], mode="view", view="XY")
 
 ###############################################################################
 # Import CAD file
@@ -112,14 +101,12 @@ ipk.modeler.import_3d_cad(file_path, refresh_all_ids=False)
 
 ipk.save_project(refresh_obj_ids_after_save=True)
 
-
 ###############################################################################
 # Plot model
 # ~~~~~~~~~~
 # Plot the model.
 
 ipk.plot(show=False, export_path=os.path.join(project_folder, "Sherlock_Example.jpg"), plot_air_objects=False)
-
 
 ###############################################################################
 # Delete PCB objects
@@ -138,7 +125,7 @@ ipk.modeler.create_air_region(*[20, 20, 300, 20, 20, 300])
 ###############################################################################
 # Assign materials
 # ~~~~~~~~~~~~~~~~
-# Assign materials from the the Sherlock file.
+# Assign materials from Sherlock file.
 
 ipk.assignmaterial_from_sherlock_files(component_list, material_list)
 
@@ -163,8 +150,7 @@ all_objects = ipk.modeler.object_names
 # ~~~~~~~~~~~~~~~~~~~
 # Assign power blocks from the Sherlock file.
 
-total_power = ipk.assign_block_from_sherlock_file(component_list)
-
+total_power = ipk.assign_block_from_sherlock_file(csv_name=component_list)
 
 ###############################################################################
 # Plot model
@@ -173,20 +159,33 @@ total_power = ipk.assign_block_from_sherlock_file(component_list)
 
 ipk.plot(show=False, export_path=os.path.join(project_folder, "Sherlock_Example.jpg"), plot_air_objects=False)
 
-
 ###############################################################################
 # Set up boundaries
 # ~~~~~~~~~~~~~~~~~
 # Set up boundaries.
 
-ipk.mesh.automatic_mesh_pcb(4)
+# Mesh settings that is tailored for PCB
+# Max iterations is set to 20 for quick demonstration, please increase to at least 100 for better accuracy.
+
+ipk.globalMeshSettings(3, gap_min_elements='1', noOgrids=True, MLM_en=True,
+                            MLM_Type='2D', edge_min_elements='2', object='Region')
 
 setup1 = ipk.create_setup()
 setup1.props["Solution Initialization - Y Velocity"] = "1m_per_sec"
 setup1.props["Radiation Model"] = "Discrete Ordinates Model"
 setup1.props["Include Gravity"] = True
 setup1.props["Secondary Gradient"] = True
+setup1.props["Convergence Criteria - Max Iterations"] = 10
 ipk.assign_openings(ipk.modeler.get_object_faces("Region"))
+
+###############################################################################
+# Create point monitor
+# ~~~~~~~~~~~~~~~~~~~~
+
+point1 = ipk.assign_point_monitor(ipk.modeler["COMP_U10"].top_face_z.center, monitor_name="Point1")
+ipk.modeler.set_working_coordinate_system("Global")
+line = ipk.modeler.create_polyline([ipk.modeler["COMP_U10"].top_face_z.vertices[0].position, ipk.modeler["COMP_U10"].top_face_z.vertices[2].position], non_model=True)
+ipk.post.create_report(expressions="Point1.Temperature", primary_sweep_variable="X")
 
 ###############################################################################
 # Check for intersections
@@ -195,6 +194,28 @@ ipk.assign_openings(ipk.modeler.get_object_faces("Region"))
 # assigning priorities.
 
 ipk.assign_priority_on_intersections()
+
+###############################################################################
+# Compute power budget
+# ~~~~~~~~~~~~~~~~~~~~
+
+power_budget, total = ipk.post.power_budget("W" )
+print(total)
+
+###############################################################################
+# Analyze the model
+# ~~~~~~~~~~~~~~~~~
+
+ipk.analyze(num_cores=4, num_tasks=4)
+ipk.save_project()
+
+###############################################################################
+# Get solution data and plots
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+plot1 = ipk.post.create_fieldplot_surface(ipk.modeler["COMP_U10"].faces, "SurfTemperature")
+ipk.post.plot_field("SurfPressure",ipk.modeler["COMP_U10"].faces,export_path=ipk.working_directory, show=False)
+
 
 ###############################################################################
 # Save project and release AEDT
@@ -206,6 +227,6 @@ ipk.save_project()
 end = time.time() - start
 print("Elapsed time: {}".format(datetime.timedelta(seconds=end)))
 print("Project Saved in {} ".format(ipk.project_file))
-if os.name != "posix":
-    ipk.release_desktop()
+ipk.release_desktop()
+
 
