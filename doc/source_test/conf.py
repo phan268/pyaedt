@@ -49,15 +49,14 @@ extensions = [
     "sphinx.ext.todo",
     "sphinx.ext.viewcode",
     "sphinx.ext.autosummary",
-    "sphinx.ext.intersphinx",
     "sphinx.ext.coverage",
     "sphinx_copybutton",
-    "recommonmark",
+ #   "recommonmark",
     "sphinx.ext.graphviz",
     "sphinx.ext.mathjax",
     "sphinx.ext.inheritance_diagram",
     "numpydoc",
-  #  "m2r2"
+    "m2r2"
 ]
 
 # Intersphinx mapping

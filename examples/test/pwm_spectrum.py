@@ -1,29 +1,13 @@
-# ---
-# jupyter:
-#   jupytext:
-#     formats: ipynb,py:percent
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.16.0
-#   kernelspec:
-#     display_name: Python 3 (ipykernel)
-#     language: python
-#     name: python3
-# ---
-
 # %%
-# %matplotlib inline
+"""
+------------
+PWM Spectrum
+------------
 
-# %% [markdown]
-# # PWM Spectrum
-#
-# This notebook illustrates the impact of switching rise and fall
-# time on the spectrum of a pulse-width modulated (PWM) signal.
-#
-# _imports:_
+This notebook illustrates the impact of switching rise and fall
+time on the spectrum of a pulse-width modulated (PWM) signal.
 
+"""
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
@@ -41,7 +25,8 @@ n_cycles = 2  # Number of electrical cycles
 t_tot = n_cycles / freq  # Total time
 
 # %% [markdown]
-# Update the time series so each PWM cycle is fully sampled.  This simplifies the creation of the PMW signal if the number of electrical cycles is not an integer multiple of the number of PWM cycles.
+# Update the time series so each PWM cycle is fully sampled.  This simplifies the creation of the PMW
+# signal if the number of electrical cycles is not an integer multiple of the number of PWM cycles.
 #
 # The total number of time samples will be updated.
 
@@ -61,7 +46,7 @@ print(f"Number of PWM cycles: {n_pwm_cycles}")
 print(f"Total time has been updated to {t_tot * 1E3:.1f} ms")
 
 # %% [markdown]
-# ## PWM Signal
+# ### PWM Signal
 #
 # Build the PWM signal from the sinusoidal signal, `f(_freq, _t)`.
 
@@ -77,7 +62,7 @@ for m in range(n_pwm_cycles):  # Build the transient PWM signal.
     t0 += t_pwm  # Update the PWM cycle number.
 
 # %% [markdown]
-# ## Apply rise-time and FFT
+# ### Apply rise-time and FFT
 #
 # - ``lpf(_w, _f)`` applies a window function `_w` to the time-series data in `_f`
 # - ``spectrum(_f)`` returns the FFT of the data series in `_f`
