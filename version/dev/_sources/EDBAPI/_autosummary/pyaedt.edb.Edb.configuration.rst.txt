@@ -1,0 +1,6 @@
+configuration
+=============
+
+.. currentmodule:: pyaedt.edb
+
+.. autoproperty:: Edb.configuration
